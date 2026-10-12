@@ -1,6 +1,7 @@
 <script lang="ts">
   import type McpToolsPlugin from "$/main";
   import { Notice } from "obsidian";
+  import { logger } from "$/shared/logger";
   import {
     CLAUDE_CODE_TOKEN_ENV_VAR,
     claudeCodeEnvConfig,
@@ -129,7 +130,7 @@
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       new Notice(`Failed to generate .mcpb: ${msg}`);
-      console.error("[mcpb] generation failed", err);
+      logger.error("[mcpb] generation failed", { error: err });
     } finally {
       mcpbBusy = false;
     }

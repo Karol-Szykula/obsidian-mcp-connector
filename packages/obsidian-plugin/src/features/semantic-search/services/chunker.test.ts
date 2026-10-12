@@ -1,4 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { logger } from "$/shared/logger";
+import { createMemoryLogFs } from "$/shared/log/memoryLogFs";
 import {
   chunk,
   countTokens,
@@ -382,5 +384,59 @@ describe("makeChunkerForProvider", () => {
     const content = `# Body\n\n${lorem(300)}`;
     const chunks = await makeChunkerForProvider(stubProvider(256))(content);
     expect(chunks.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+/**
+ * R-05: the oversized-fence DEBUG line holds the heading's length and never
+ * its text. A heading is note content. Read back from an in-memory file
+ * system the logger is configured onto.
+ */
+describe("chunker — oversized code fence log line (R-05)", () => {
+  const LOG_PATH = "/mem/diagnostic.log";
+  const HEADING = "Private Diary Heading";
+  type Line = {
+    level: string;
+    message: string;
+    fields: Record<string, unknown>;
+  };
+  let memory = createMemoryLogFs();
+
+  beforeEach(async () => {
+    await logger.close();
+    memory = createMemoryLogFs();
+    logger.configure({ dir: "/mem", level: "DEBUG", fs: memory });
+  });
+  afterEach(async () => {
+    await logger.close();
+  });
+
+  test("the DEBUG line carries headingLength and not the heading text", async () => {
+    const codeLines = Array.from(
+      { length: 150 },
+      (_, i) => `const x${i} = ${i};`,
+    ).join("\n");
+    const content = `## ${HEADING}\n\n\`\`\`typescript\n${codeLines}\n\`\`\``;
+
+    const chunks = await chunk(content, { maxTokens: 512 });
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]?.heading).toBe(HEADING);
+
+    await logger.flush();
+    const text = memory.files.get(LOG_PATH) ?? "";
+    const lines = text
+      .split("\n")
+      .filter((l) => l !== "")
+      .map((l) => JSON.parse(l) as Line)
+      .filter(
+        (l) =>
+          l.message === "embedding chunker: oversized code fence kept atomic",
+      );
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.level).toBe("DEBUG");
+    expect(lines[0]?.fields.headingLength).toBe(HEADING.length);
+    expect("heading" in (lines[0]?.fields ?? {})).toBe(false);
+    expect(text).not.toContain(HEADING);
+    expect(text).not.toContain("Diary");
   });
 });

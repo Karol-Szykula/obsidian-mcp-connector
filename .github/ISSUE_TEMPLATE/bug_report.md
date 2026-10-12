@@ -41,10 +41,13 @@ For questions or general help, use Discord: https://discord.gg/q59pTrN9AA
 
 ## Error Messages/Logs
 <!-- 
-To access logs:
-1. Open plugin settings
-2. Click "Open Logs" under Resources
-3. Copy relevant error messages
+To collect the diagnostic log:
+1. Open Settings → MCP Connector → Diagnostics
+2. Optional: set Log level to DEBUG and reproduce the problem
+3. Click "Copy last 200 lines" and paste below, or attach diagnostic.log
+   (Show in folder opens it)
+Tokens, tool argument values and note content are removed where known, but
+some failure lines name a vault-relative note path: review before posting.
 -->
 
 ```

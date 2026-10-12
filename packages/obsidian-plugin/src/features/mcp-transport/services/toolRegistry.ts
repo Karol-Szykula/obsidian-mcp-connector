@@ -4,10 +4,11 @@ import type {
   Result,
   ToolAnnotations,
 } from "@modelcontextprotocol/server";
-import { type, type Type } from "arktype";
+import { ArkError, type, type Type } from "arktype";
 import { formatMcpError } from "./formatMcpError";
 import { errorJson } from "$/features/mcp-tools/services/responseBuilders";
 import { logger } from "$/shared";
+import { scrubArgumentValues } from "$/shared/log/redact";
 import { isActiveFor } from "$/features/adaptive-tool-loading/resolveToolScope";
 import type { ToolScope } from "$/shared/types";
 
@@ -1013,12 +1014,33 @@ export class ToolRegistryClass<
       const formattedError = formatMcpError(error);
       // Log the tool name only, never params.arguments — those carry
       // user data (note content, paths, queries) onto the on-disk log.
+      // This is the one place that holds both the arguments and the error
+      // text, so it is the one call-site scrub (ADR-0029 D4). Neither the
+      // raw error nor the formatted error's `data` is logged: either can
+      // carry an arbitrary thrown value. The response below is built from
+      // the unscrubbed `formattedError`, exactly as before (R-10).
       logger.error(`Error handling ${params.name}`, {
-        ...formattedError,
-        message: formattedError.message,
-        stack: formattedError.stack,
-        error,
         tool: params.name,
+        errorCode: isValidationFailure(error)
+          ? "invalid_params"
+          : errorCodeOf(formattedError.code),
+        error: {
+          // Name and stack both come from the thrown error, so the line
+          // never pairs the wrapper's class name with the original stack.
+          name: error instanceof Error ? error.name : formattedError.name,
+          message: scrubArgumentValues(
+            formattedError.message,
+            params.arguments,
+          ),
+          // The thrown error's own stack points at the failing handler;
+          // the formatted one only at formatMcpError.
+          stack: scrubArgumentValues(
+            (error instanceof Error ? error.stack : undefined) ??
+              formattedError.stack ??
+              "",
+            params.arguments,
+          ),
+        },
       });
       return errorJson(
         formattedError.message,
@@ -1045,6 +1067,26 @@ const PROTOCOL_ERROR_CODE_NAMES: ReadonlyMap<number, string> = new Map([
 
 function errorCodeOf(code: number): string {
   return PROTOCOL_ERROR_CODE_NAMES.get(code) ?? "internal_error";
+}
+
+/**
+ * Whether a caught value is an ArkType validation failure. `schema.assert()`
+ * throws an `AggregateError` of `ArkError`s, not an `ArkErrors` instance, so
+ * `formatMcpError` maps it to `InternalError` and the response carries
+ * `internal_error`. The log line names it for what it is; the response is
+ * left exactly as it was (ADR-0029 D4, R-10).
+ */
+function isValidationFailure(error: unknown): boolean {
+  if (error instanceof type.errors) return true;
+  const errors: unknown =
+    typeof error === "object" && error !== null
+      ? (error as { errors?: unknown }).errors
+      : undefined;
+  return (
+    Array.isArray(errors) &&
+    errors.length > 0 &&
+    errors.every((e) => e instanceof ArkError)
+  );
 }
 
 export type ToolRegistry = ToolRegistryClass<

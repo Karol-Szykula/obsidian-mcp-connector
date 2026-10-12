@@ -1,9 +1,11 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createServer, type Server } from "node:http";
 import { mockPlugin } from "$/test-setup";
 import { setup, teardown, type McpTransportState } from "./setup";
 import type McpToolsPlugin from "$/main";
 import { PORT_RANGE } from "../constants";
+import { logger } from "$/shared/logger";
+import { createMemoryLogFs } from "$/shared/log/memoryLogFs";
 
 /**
  * `mcpTransport.livePort` is the actually-bound port, written back after
@@ -154,6 +156,93 @@ describe("setup — sticky livePort", () => {
       expect(slice.livePort).toBe(port!);
     } finally {
       await new Promise<void>((resolve) => replacement.close(() => resolve()));
+    }
+  });
+});
+
+/**
+ * R-09: server start (with port), stop and a start failure are logged.
+ * The lines are read back from an in-memory file system the logger is
+ * configured onto, so they are what is actually written, after redaction.
+ */
+describe("diagnostic log — server lifecycle", () => {
+  const LOG_PATH = "/mem/diagnostic.log";
+  type Line = {
+    level: string;
+    message: string;
+    fields: Record<string, unknown>;
+  };
+  let memory = createMemoryLogFs();
+
+  beforeEach(async () => {
+    await logger.close();
+    memory = createMemoryLogFs();
+    logger.configure({ dir: "/mem", level: "DEBUG", fs: memory });
+  });
+  afterEach(async () => {
+    await logger.close();
+  });
+
+  async function named(message: string): Promise<Line[]> {
+    await logger.flush();
+    return (memory.files.get(LOG_PATH) ?? "")
+      .split("\n")
+      .filter((l) => l !== "")
+      .map((l) => JSON.parse(l) as Line)
+      .filter((l) => l.message === message);
+  }
+
+  test("start writes `listening` at INFO with the bound port, and never the bearer token", async () => {
+    const { plugin } = makePlugin();
+    const result = await setup(plugin);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    active.push(result.state);
+
+    const lines = await named("MCP Connector HTTP server listening");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.level).toBe("INFO");
+    expect(lines[0]?.fields.port).toBe(result.state.server.port);
+    expect(memory.files.get(LOG_PATH) ?? "").not.toContain(
+      result.state.bearerToken,
+    );
+  });
+
+  test("teardown writes `stopped` at INFO with the port it released", async () => {
+    const { plugin } = makePlugin();
+    const result = await setup(plugin);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    const port = result.state.server.port;
+
+    await teardown(result.state);
+
+    const lines = await named("MCP Connector HTTP server stopped");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.level).toBe("INFO");
+    expect(lines[0]?.fields).toEqual({ port });
+  });
+
+  test("a start failure keeps its ERROR line", async () => {
+    // A fixed port that something else already holds: setup refuses to fall
+    // back to the range and reports the failure.
+    const blocker = createServer();
+    await new Promise<void>((resolve) =>
+      blocker.listen(0, "127.0.0.1", () => resolve()),
+    );
+    const busyPort = (blocker.address() as { port: number }).port;
+    try {
+      const { plugin } = makePlugin({ mcpTransport: { port: busyPort } });
+      const result = await setup(plugin);
+      expect(result.success).toBe(false);
+
+      const lines = await named("MCP Connector failed to start HTTP server");
+      expect(lines).toHaveLength(1);
+      expect(lines[0]?.level).toBe("ERROR");
+      expect(String(lines[0]?.fields.error)).toContain("in use");
+      expect(await named("MCP Connector HTTP server listening")).toEqual([]);
+    } finally {
+      await new Promise<void>((resolve) => blocker.close(() => resolve()));
     }
   });
 });

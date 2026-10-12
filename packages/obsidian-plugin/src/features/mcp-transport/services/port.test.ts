@@ -1,7 +1,9 @@
-import { describe, expect, test, afterEach } from "bun:test";
+import { describe, expect, test, afterEach, beforeEach } from "bun:test";
 import { createServer, type Server } from "node:http";
 import { bindWithFallback, resolvePorts } from "./port";
 import { BROKER_PORT, PORT_RANGE } from "../constants";
+import { logger } from "$/shared/logger";
+import { createMemoryLogFs } from "$/shared/log/memoryLogFs";
 
 const openServers: Server[] = [];
 
@@ -111,5 +113,79 @@ describe("resolvePorts with the broker port and a last live port", () => {
   test("a fixed port wins over the last live port, and a legacy fixed broker port still loads", () => {
     expect(resolvePorts(27210, 27205)).toEqual([27210]);
     expect(resolvePorts(BROKER_PORT, 27205)).toEqual([BROKER_PORT]);
+  });
+});
+
+/**
+ * R-09: a port-bind failure is logged. The line is written on each
+ * EADDRINUSE, at WARN, and the bind then carries on to the next port.
+ */
+describe("diagnostic log — port busy", () => {
+  const LOG_PATH = "/mem/diagnostic.log";
+  const BUSY = "MCP Connector HTTP server port busy";
+  type Line = {
+    level: string;
+    message: string;
+    fields: Record<string, unknown>;
+  };
+  let memory = createMemoryLogFs();
+
+  beforeEach(async () => {
+    await logger.close();
+    memory = createMemoryLogFs();
+    logger.configure({ dir: "/mem", level: "DEBUG", fs: memory });
+  });
+  afterEach(async () => {
+    await logger.close();
+  });
+
+  async function busyLines(): Promise<Line[]> {
+    await logger.flush();
+    return (memory.files.get(LOG_PATH) ?? "")
+      .split("\n")
+      .filter((l) => l !== "")
+      .map((l) => JSON.parse(l) as Line)
+      .filter((l) => l.message === BUSY);
+  }
+
+  test("an EADDRINUSE on the first port writes a WARN {port, code}, and the bind then succeeds on the next port", async () => {
+    const { port: p0 } = await occupyFreePort();
+    const { port: p1, server: blocker1 } = await occupyFreePort();
+    await new Promise<void>((r) => blocker1.close(() => r()));
+
+    const server = createServer();
+    openServers.push(server);
+    const bound = await bindWithFallback(server, [p0, p1]);
+    expect(bound).toBe(p1);
+
+    const lines = await busyLines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.level).toBe("WARN");
+    expect(lines[0]?.fields).toEqual({ port: p0, code: "EADDRINUSE" });
+  });
+
+  test("one line per busy port, in order, when the whole list is taken", async () => {
+    const { port: p0 } = await occupyFreePort();
+    const { port: p1 } = await occupyFreePort();
+
+    const server = createServer();
+    openServers.push(server);
+    await expect(bindWithFallback(server, [p0, p1])).rejects.toThrow(
+      /no free port/i,
+    );
+
+    const lines = await busyLines();
+    expect(lines.map((l) => l.fields.port)).toEqual([p0, p1]);
+  });
+
+  test("a free first port writes no busy line", async () => {
+    const { port, server: blocker } = await occupyFreePort();
+    await new Promise<void>((r) => blocker.close(() => r()));
+
+    const server = createServer();
+    openServers.push(server);
+    await bindWithFallback(server, [port]);
+
+    expect(await busyLines()).toEqual([]);
   });
 });

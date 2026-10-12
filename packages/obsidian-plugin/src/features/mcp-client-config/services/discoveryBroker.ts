@@ -428,6 +428,11 @@ async function startRuntime(
     backoff = reconnectMs;
     lastLoggedMessage = null;
     setStatus({ state: "connected" });
+    // Ports only: never the route id or the access token.
+    logger.info("Broker route registered", {
+      brokerPort: host.port,
+      transportPort: opts.transportPort,
+    });
     void next.closed.then(() => {
       if (control === next) control = null;
       // The host may have gone: re-elect promptly, with jitter so the

@@ -1,6 +1,7 @@
 <script lang="ts">
   import type McpToolsPlugin from "$/main";
   import { Notice } from "obsidian";
+  import { logger } from "$/shared/logger";
   import { createEventDispatcher, onMount } from "svelte";
   import { ToolLoadingManager } from "../toolLoadingManager";
   import {
@@ -247,7 +248,7 @@
       } catch (notifyErr) {
         const notifyMessage =
           notifyErr instanceof Error ? notifyErr.message : String(notifyErr);
-        console.warn(
+        logger.warn(
           `[adaptive] notifyToolsChanged threw after migration: ${notifyMessage}`,
         );
       }

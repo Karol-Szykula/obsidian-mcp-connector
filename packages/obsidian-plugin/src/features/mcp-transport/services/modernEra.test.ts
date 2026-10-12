@@ -8,6 +8,13 @@ import {
 } from "./mcpServer";
 import { staticTokenProvider } from "./tokenStore";
 import type { RunningServer } from "./httpServer";
+import { logger } from "$/shared/logger";
+import { captureLogLines } from "$/shared/log/logCapture";
+import {
+  REQUEST_EVENT,
+  TOOL_CALL_EVENT,
+  VERSION_REJECTED_EVENT,
+} from "./requestLog";
 
 /**
  * TDD RED phase for OMC-008 Task 4 (`docs/architecture/ADR-0016-...md`,
@@ -1418,5 +1425,125 @@ describe("search_vault_simple — _meta payload gated on the modern era's declar
     const body = await res.json();
     expect(body.result?.isError).toBe(true);
     expect(body.result?._meta?.[PAYLOAD_KEY]).toBeUndefined();
+  });
+});
+
+/**
+ * Diagnostic log on the modern era (ADR-0029 D5, SPEC R-07, R-08).
+ *
+ * Reads the lines actually written, after redaction, from an in-memory file
+ * system. `captureLogLines` registers this describe's own hooks so the cases
+ * above are untouched.
+ */
+describe("diagnostic log — modern-era events", () => {
+  const { lines, has, named } = captureLogLines();
+
+  test("a modern tools/call logs era `modern`", async () => {
+    const server = await startService();
+    const res = await postMcp(
+      server.port,
+      TOKEN,
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          _meta: VALID_ENVELOPE,
+          name: "get_server_info",
+          arguments: {},
+        },
+      },
+      { ...modernHeaders("tools/call"), "mcp-name": "get_server_info" },
+    );
+    expect(res.status).toBe(200);
+    await res.text();
+
+    const events = named(
+      await lines((a) => has(a, TOOL_CALL_EVENT)),
+      TOOL_CALL_EVENT,
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]?.level).toBe("INFO");
+    expect(events[0]?.fields.era).toBe("modern");
+    expect(events[0]?.fields.tool).toBe("get_server_info");
+    expect(events[0]?.fields.outcome).toBe("ok");
+    expect(events[0]?.fields.tokenId).toBe("default");
+    expect(events[0]?.fields.argKeys).toEqual([]);
+  });
+
+  test("server/discover writes a DEBUG request event with era `modern`", async () => {
+    const server = await startService();
+    const res = await postMcp(
+      server.port,
+      TOKEN,
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "server/discover",
+        params: { _meta: VALID_ENVELOPE },
+      },
+      modernHeaders("server/discover"),
+    );
+    expect(res.status).toBe(200);
+    await res.text();
+
+    const all = await lines((a) =>
+      named(a, REQUEST_EVENT).some(
+        (l) => l.fields.method === "server/discover",
+      ),
+    );
+    const requests = named(all, REQUEST_EVENT).filter(
+      (l) => l.fields.method === "server/discover",
+    );
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.level).toBe("DEBUG");
+    expect(requests[0]?.fields.era).toBe("modern");
+    expect(requests[0]?.fields.requestedVersion).toBe("2026-07-28");
+    expect(requests[0]?.fields.status).toBe(200);
+    expect(requests[0]?.fields.tokenId).toBe("default");
+    expect(typeof requests[0]?.fields.durationMs).toBe("number");
+  });
+
+  test("an unsupported 2026-era revision also writes a WARN with rung `sdk` and the requested value, and the response is unchanged", async () => {
+    const server = await startService();
+    const send = async () => {
+      const res = await postMcp(
+        server.port,
+        TOKEN,
+        {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/list",
+          params: {
+            _meta: {
+              "io.modelcontextprotocol/protocolVersion": "2027-05-01",
+              "io.modelcontextprotocol/clientCapabilities": {},
+            },
+          },
+        },
+        { "mcp-protocol-version": "2027-05-01", "mcp-method": "tools/list" },
+      );
+      return { status: res.status, body: await res.text() };
+    };
+
+    const logged = await send();
+    expect(logged.status).toBe(400);
+    const parsed = JSON.parse(logged.body);
+    expect(parsed.error?.data?.requested).toBe("2027-05-01");
+
+    const all = await lines((a) => has(a, VERSION_REJECTED_EVENT));
+    const rejected = named(all, VERSION_REJECTED_EVENT);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.level).toBe("WARN");
+    expect(rejected[0]?.fields.rung).toBe("sdk");
+    expect(rejected[0]?.fields.requested).toBe("2027-05-01");
+    expect(rejected[0]?.fields.era).toBe("modern");
+    expect(rejected[0]?.fields.tokenId).toBe("default");
+    // One line per rejected request: the WARN replaces the request event.
+    expect(named(all, REQUEST_EVENT)).toEqual([]);
+
+    await logger.close();
+    const unlogged = await send();
+    expect(unlogged).toEqual(logged);
   });
 });

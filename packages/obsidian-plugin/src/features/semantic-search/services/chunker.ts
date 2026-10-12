@@ -288,8 +288,9 @@ async function emitSectionChunks(
 
   // Oversized: check for atomic code fence before splitting.
   if (hasOversizedCodeFence(text, maxTokens)) {
+    // The heading's length, never its text: a heading is note content.
     logger.debug("embedding chunker: oversized code fence kept atomic", {
-      heading: section.heading,
+      headingLength: section.heading?.length ?? 0,
       tokens: tokenCount,
     });
     out.push({

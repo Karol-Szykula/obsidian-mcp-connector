@@ -602,6 +602,134 @@ describe("ToolRegistry — tool-error log redaction", () => {
     // No serialized form of the meta object may leak the argument value.
     expect(JSON.stringify(meta)).not.toContain("private-note-body");
   });
+
+  /**
+   * ADR-0029 D4. The dispatcher's `catch` is the one place that holds both
+   * the arguments and the error text, so it is the one place that scrubs
+   * argument values. The ERROR line carries exactly `tool`, `errorCode` and
+   * `error {name, message, stack}`: no raw error object, no spread of the
+   * formatted error (whose `data` can hold an arbitrary thrown value).
+   */
+  async function dispatchAndCaptureError(
+    tools: ToolRegistryClass<never, never>,
+    params: { name: string; arguments: unknown },
+  ) {
+    const calls: Array<[unknown, unknown]> = [];
+    const spy = spyOn(logger, "error").mockImplementation(
+      (msg: unknown, meta?: unknown) => {
+        calls.push([msg, meta]);
+      },
+    );
+    let result: unknown;
+    try {
+      result = await tools.dispatch(params as never, fakeContext);
+    } finally {
+      spy.mockRestore();
+    }
+    return { calls, result };
+  }
+
+  test("the ERROR fields are exactly tool, errorCode and error {name, message, stack}, with no argument value in the message or stack", async () => {
+    const tools = new ToolRegistryClass();
+    const schema = type({
+      name: '"scrub-me"',
+      arguments: { body: "string" },
+    }).describe("Throws, quoting its argument");
+    tools.register(schema, (p: { arguments: { body: string } }) => {
+      throw new Error(`could not process ${p.arguments.body}`);
+    });
+
+    const { calls, result } = await dispatchAndCaptureError(tools as never, {
+      name: "scrub-me",
+      arguments: { body: "private-note-body" },
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.[0]).toBe("Error handling scrub-me");
+    const meta = calls[0]?.[1] as Record<string, unknown>;
+    expect(Object.keys(meta).sort()).toEqual(["error", "errorCode", "tool"]);
+    expect(meta.tool).toBe("scrub-me");
+    expect(meta.errorCode).toBe("internal_error");
+
+    const error = meta.error as Record<string, unknown>;
+    expect(error instanceof Error).toBe(false);
+    expect(Object.keys(error).sort()).toEqual(["message", "name", "stack"]);
+    expect(typeof error.name).toBe("string");
+    expect(error.message as string).not.toContain("private-note-body");
+    expect(error.stack as string).not.toContain("private-note-body");
+    expect(JSON.stringify(meta)).not.toContain("private-note-body");
+
+    // R-10: the client still receives the tool's own, unscrubbed message.
+    expect(JSON.stringify(result)).toContain("private-note-body");
+  });
+
+  test("the logged error name is the thrown error's class, not the formatted wrapper's", async () => {
+    const tools = new ToolRegistryClass();
+    const schema = type({
+      name: '"throw-type-error"',
+      arguments: {},
+    }).describe("Throws a TypeError");
+    tools.register(schema, () => {
+      throw new TypeError("bad type");
+    });
+
+    const { calls } = await dispatchAndCaptureError(tools as never, {
+      name: "throw-type-error",
+      arguments: {},
+    });
+
+    expect(calls).toHaveLength(1);
+    const meta = calls[0]?.[1] as Record<string, unknown>;
+    const error = meta.error as { name: string; stack: string };
+    expect(error.name).toBe("TypeError");
+    expect(error.stack).toContain("TypeError");
+  });
+
+  test("an ArkType validation failure logs `(was [REDACTED:arg])`, and the returned error is unchanged", async () => {
+    const tools = new ToolRegistryClass();
+    const schema = type({
+      name: '"validate-me"',
+      arguments: { count: "number" },
+    }).describe("Wants a number");
+    tools.register(schema, () => ({
+      content: [{ type: "text", text: "unreachable" }],
+    }));
+
+    const { calls, result } = await dispatchAndCaptureError(tools as never, {
+      name: "validate-me",
+      arguments: { count: "private-note-body" },
+    });
+
+    expect(calls).toHaveLength(1);
+    const meta = calls[0]?.[1] as Record<string, unknown>;
+    expect(meta.errorCode).toBe("invalid_params");
+    const error = meta.error as { message: string; stack: string };
+    expect(error.message).toContain("(was [REDACTED:arg])");
+    expect(JSON.stringify(meta)).not.toContain("private-note-body");
+    expect(JSON.stringify(result)).toContain("must be a number");
+  });
+
+  test("a thrown non-Error value never reaches the line through a spread of the formatted error's data", async () => {
+    const tools = new ToolRegistryClass();
+    const schema = type({
+      name: '"throw-object"',
+      arguments: { body: "string" },
+    }).describe("Throws a plain object");
+    tools.register(schema, (p: { arguments: { body: string } }) => {
+      throw { detail: p.arguments.body };
+    });
+
+    const { calls } = await dispatchAndCaptureError(tools as never, {
+      name: "throw-object",
+      arguments: { body: "private-note-body" },
+    });
+
+    expect(calls).toHaveLength(1);
+    const meta = calls[0]?.[1] as Record<string, unknown>;
+    expect(Object.keys(meta).sort()).toEqual(["error", "errorCode", "tool"]);
+    expect("data" in meta).toBe(false);
+    expect(JSON.stringify(meta)).not.toContain("private-note-body");
+  });
 });
 
 describe("ToolRegistry list() memoization", () => {

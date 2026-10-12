@@ -32,7 +32,11 @@ import {
 } from "$/features/mcp-apps/services/searchResultsViewSetting";
 import { composeToolRegistry } from "$/composeToolRegistry";
 import { pathPolicyFor } from "$/shared/policyProvider";
-import { ERROR_CODES, MAX_REQUEST_BODY_BYTES } from "../constants";
+import {
+  ERROR_CODES,
+  MAX_REQUEST_BODY_BYTES,
+  SUPPORTED_PROTOCOL_VERSIONS,
+} from "../constants";
 import {
   flush as flushEraCounters,
   record as recordEra,
@@ -43,6 +47,16 @@ import {
   bodyTargetsSseNotificationTool,
   readBodyWithCap,
 } from "./parseRequestBody";
+import {
+  argumentKeys,
+  describeRequest,
+  refusalReason,
+  REQUEST_EVENT,
+  requestLogLevel,
+  TOOL_CALL_EVENT,
+  toolCallOutcome,
+  VERSION_REJECTED_EVENT,
+} from "./requestLog";
 
 /**
  * Boundary cast for the two registry handlers wired below.
@@ -318,6 +332,10 @@ export async function createMcpService(
     let callerPromise: Promise<CallerView> | undefined;
     const getCaller = (): Promise<CallerView> =>
       (callerPromise ??= resolveCaller(tokenId));
+    // For the log only. `promptsListChanged` is already the era
+    // discriminant: `true` on the modern factory alone (ADR-0017, ADR-0029
+    // D5).
+    const era = promptsListChanged ? "modern" : "legacy";
 
     const server = new McpServer(
       {
@@ -393,62 +411,81 @@ export async function createMcpService(
       );
     });
     server.server.setRequestHandler("tools/call", async (request, ctx) => {
-      const { scope, searchResultsView } = await getCaller();
-      // Read the outcome classification against the same scope dispatch()
-      // will read, and synchronously with it: the await above is the only
-      // suspension point, and dispatch()'s own branch check runs
-      // synchronously before its first await — so no interleaving is
-      // possible between this check and dispatch()'s internal one. See
-      // ADR-0011.
-      const isInactive = registry.isInactive(request.params.name, scope);
-      // Pass the SDK's request-scoped sendNotification down to the
-      // handler. activate_tool uses it so its tools/list_changed carries
-      // this call's relatedRequestId and is flushed on the POST response
-      // stream (which is SSE for activate_tool — see below).
-      const policy = await pathPolicy.refresh();
-      const result = await pathPolicy.runWith(policy, () =>
-        registry.dispatch(request.params, {
-          server,
-          sendNotification: ctx.mcpReq.notify,
-          scope,
-          refusedTools: refusedToolsFor(policy),
-          // Read off the SAME per-request ctx that already supplies
-          // `notify` above, from the envelope the SDK lifts for the modern
-          // era (R-09, ADR-0023 D9). A legacy-classified request never
-          // reaches this leg with an envelope, so this stays `undefined`
-          // there — which the search tools read as "no signal" and keep
-          // attaching on, not as "no support".
-          //
-          // View switched off for this caller (discussion #543): force the
-          // signal to the one value the search tools already treat as
-          // "withhold the payload", on both eras. Reusing that branch
-          // instead of adding a second flag keeps a single withholding
-          // path for the tools to get right.
-          hasUiCapability: searchResultsView
-            ? declaresUiExtension(ctx.mcpReq.envelope)
-            : false,
-        }),
-      );
-      // Record the call for frequency-based promotion (meta-tools and
-      // adaptive-inactive calls are excluded — the latter did not
-      // execute, see ADR-0011).
-      if (
-        !isInactive &&
-        !(META_TOOLS as string[]).includes(request.params.name)
-      ) {
-        toolLoadingManager
-          .recordCall(request.params.name, config.plugin, tokenId)
-          .catch((error: unknown) => {
-            // Fire-and-forget by design, but a persistent settings
-            // write failure (disk full, corrupted data.json) must
-            // leave a diagnostic trail.
-            logger.warn("[mcp] recordCall failed", {
-              tool: request.params.name,
-              error: error instanceof Error ? error.message : String(error),
+      // One INFO event per call, written in the `finally` so a throw before
+      // dispatch is logged as `rejected` and still propagates untouched
+      // (ADR-0029 D5). Argument key names only, never a value.
+      const startedAt = Date.now();
+      let isInactive = false;
+      let outcome: { isError?: boolean } | undefined;
+      try {
+        const { scope, searchResultsView } = await getCaller();
+        // Read the outcome classification against the same scope dispatch()
+        // will read, and synchronously with it: the await above is the only
+        // suspension point, and dispatch()'s own branch check runs
+        // synchronously before its first await — so no interleaving is
+        // possible between this check and dispatch()'s internal one. See
+        // ADR-0011.
+        isInactive = registry.isInactive(request.params.name, scope);
+        // Pass the SDK's request-scoped sendNotification down to the
+        // handler. activate_tool uses it so its tools/list_changed carries
+        // this call's relatedRequestId and is flushed on the POST response
+        // stream (which is SSE for activate_tool — see below).
+        const policy = await pathPolicy.refresh();
+        const result = await pathPolicy.runWith(policy, () =>
+          registry.dispatch(request.params, {
+            server,
+            sendNotification: ctx.mcpReq.notify,
+            scope,
+            refusedTools: refusedToolsFor(policy),
+            // Read off the SAME per-request ctx that already supplies
+            // `notify` above, from the envelope the SDK lifts for the modern
+            // era (R-09, ADR-0023 D9). A legacy-classified request never
+            // reaches this leg with an envelope, so this stays `undefined`
+            // there — which the search tools read as "no signal" and keep
+            // attaching on, not as "no support".
+            //
+            // View switched off for this caller (discussion #543): force the
+            // signal to the one value the search tools already treat as
+            // "withhold the payload", on both eras. Reusing that branch
+            // instead of adding a second flag keeps a single withholding
+            // path for the tools to get right.
+            hasUiCapability: searchResultsView
+              ? declaresUiExtension(ctx.mcpReq.envelope)
+              : false,
+          }),
+        );
+        // Record the call for frequency-based promotion (meta-tools and
+        // adaptive-inactive calls are excluded — the latter did not
+        // execute, see ADR-0011).
+        if (
+          !isInactive &&
+          !(META_TOOLS as string[]).includes(request.params.name)
+        ) {
+          toolLoadingManager
+            .recordCall(request.params.name, config.plugin, tokenId)
+            .catch((error: unknown) => {
+              // Fire-and-forget by design, but a persistent settings
+              // write failure (disk full, corrupted data.json) must
+              // leave a diagnostic trail.
+              logger.warn("[mcp] recordCall failed", {
+                tool: request.params.name,
+                error: error instanceof Error ? error.message : String(error),
+              });
             });
-          });
+        }
+        outcome = result as { isError?: boolean } | undefined;
+        return asCallToolResult(result);
+      } finally {
+        logger.info(TOOL_CALL_EVENT, {
+          method: "tools/call",
+          tool: request.params.name,
+          argKeys: argumentKeys(request.params.arguments),
+          outcome: toolCallOutcome(isInactive, outcome),
+          durationMs: Date.now() - startedAt,
+          tokenId,
+          era,
+        });
       }
-      return asCallToolResult(result);
     });
     // The prompts registry never goes through toolRegistry.dispatch, so
     // it establishes its own policy scope. `expandEmbeds` transcludes
@@ -522,6 +559,7 @@ export async function createMcpService(
     // notifications/progress while indexing, #344) is flushed on this
     // call's stream. Every other request keeps the default JSON response
     // (Windows/mcp-remote path unchanged).
+    const startedAt = Date.now();
     const rawBody = await readBodyWithCap(req, MAX_REQUEST_BODY_BYTES);
     if (rawBody === null) {
       // Chunked body (no Content-Length) exceeded the cap. Falling through
@@ -532,6 +570,10 @@ export async function createMcpService(
       res.writeHead(ERROR_CODES.PAYLOAD_TOO_LARGE);
       res.end();
       req.destroy();
+      logger.info(REQUEST_EVENT, {
+        status: ERROR_CODES.PAYLOAD_TOO_LARGE,
+        reason: refusalReason(ERROR_CODES.PAYLOAD_TOO_LARGE),
+      });
       return;
     }
     let parsedBody: unknown;
@@ -572,6 +614,56 @@ export async function createMcpService(
     recordEra(era, tokenId);
     scheduleEraFlush(config.plugin);
 
+    // The request event observes, after classification and after the
+    // counters above; it reads the request and `res.statusCode` and never
+    // writes to `res` (ADR-0029 D5). A rejected protocol version writes one
+    // WARN instead of the request event, never both.
+    const described = describeRequest(parsedBody, req.headers);
+    const logRequest = (handlerThrew: boolean): void => {
+      // A handler that throws before writing a head leaves `res.statusCode`
+      // at Node's default 200, but httpServer's catch then answers 500. Report
+      // the status that will actually be sent, so the line is not filed at
+      // DEBUG as a success. Once a head is out, `statusCode` is the truth.
+      const status = handlerThrew && !res.headersSent ? 500 : res.statusCode;
+      const requested = described.requestedVersion;
+      if (
+        era === "modern" &&
+        status === 400 &&
+        requested !== undefined &&
+        !(SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(requested)
+      ) {
+        logger.warn(VERSION_REJECTED_EVENT, {
+          requested,
+          rung: "sdk",
+          era,
+          tokenId,
+        });
+        return;
+      }
+      const refusedToolCall =
+        described.method === "tools/call" && status >= 400;
+      const fields = {
+        method: described.method,
+        era,
+        requestedVersion: requested,
+        tokenId,
+        status,
+        durationMs: Date.now() - startedAt,
+        ...(refusedToolCall
+          ? {
+              tool: described.tool,
+              argKeys: described.argKeys,
+              outcome: "rejected",
+            }
+          : {}),
+      };
+      if (requestLogLevel(status) === "INFO") {
+        logger.info(REQUEST_EVENT, fields);
+      } else {
+        logger.debug(REQUEST_EVENT, fields);
+      }
+    };
+
     if (era === "modern") {
       // The token id reaches the factory as pass-through AuthInfo, read back
       // as `ctx.authInfo?.clientId`. The bearer SECRET deliberately does not
@@ -587,7 +679,15 @@ export async function createMcpService(
       };
       // Pass the pre-parsed body: `readBodyWithCap` drained the stream, and
       // the entry classifies from the value rather than re-reading it.
-      await modern(req, res, parsedBody);
+      let handlerThrew = false;
+      try {
+        await modern(req, res, parsedBody);
+      } catch (error) {
+        handlerThrew = true;
+        throw error;
+      } finally {
+        logRequest(handlerThrew);
+      }
       return;
     }
 
@@ -609,6 +709,12 @@ export async function createMcpService(
     if (deferred !== null) {
       res.writeHead(deferred.status, { "content-type": "application/json" });
       res.end(JSON.stringify(deferred.body));
+      logger.warn(VERSION_REJECTED_EVENT, {
+        requested: described.requestedVersion,
+        rung: "deferred",
+        era,
+        tokenId,
+      });
       return;
     }
 
@@ -625,12 +731,17 @@ export async function createMcpService(
       enableJsonResponse: !needsSseResponse,
     });
 
+    let handlerThrew = false;
     try {
       await server.connect(transport);
       // Pass the pre-parsed body so the SDK does not re-read the drained
       // stream (readBodyWithCap already consumed it).
       await transport.handleRequest(req, res, parsedBody);
+    } catch (error) {
+      handlerThrew = true;
+      throw error;
     } finally {
+      logRequest(handlerThrew);
       // Best-effort cleanup. If close() throws (e.g. transport
       // already closed by the SDK), log and swallow so the next
       // request still works.

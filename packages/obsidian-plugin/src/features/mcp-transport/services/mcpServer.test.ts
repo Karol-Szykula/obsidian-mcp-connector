@@ -13,6 +13,16 @@ import {
 import { resolveServerName } from "./setup";
 import { staticTokenProvider } from "./tokenStore";
 import { ToolLoadingManager } from "$/features/adaptive-tool-loading";
+import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
+import { type } from "arktype";
+import { logger } from "$/shared/logger";
+import { captureLogLines } from "$/shared/log/logCapture";
+import { flush as flushEraCounters } from "./eraCounters";
+import {
+  REQUEST_EVENT,
+  TOOL_CALL_EVENT,
+  VERSION_REJECTED_EVENT,
+} from "./requestLog";
 
 beforeEach(() => resetMockVault());
 
@@ -1075,5 +1085,443 @@ describe("resolveServerName", () => {
   test("uses the configured name, trimmed", () => {
     const app = mockApp();
     expect(resolveServerName(app, "  Foo  ")).toBe("Foo");
+  });
+});
+
+/**
+ * Diagnostic log, test seam 2 (ADR-0029 D5, SPEC R-05, R-07, R-08, R-10).
+ *
+ * These tests read the lines ACTUALLY WRITTEN, after redaction, from an
+ * in-memory file system the logger is configured onto. `captureLogLines`
+ * registers this describe's own `beforeEach`/`afterEach` rather than the
+ * file's, so the older tests above run against whatever the logger is today.
+ */
+describe("diagnostic log — transport events", () => {
+  const TOKEN = "t".repeat(32);
+  const ARG_VALUE = "needle-value-7f3a9c1d";
+  const TRANSPORT_EVENTS = [
+    REQUEST_EVENT,
+    TOOL_CALL_EVENT,
+    VERSION_REJECTED_EVENT,
+  ];
+
+  const servers: Array<{
+    server: { close: (cb: () => void) => void };
+  }> = [];
+
+  const { lines, has, named, written } = captureLogLines({
+    beforeClose: async () => {
+      for (const s of servers.splice(0)) {
+        (
+          s.server as unknown as { closeAllConnections?: () => void }
+        ).closeAllConnections?.();
+        await new Promise<void>((r) => s.server.close(() => r()));
+      }
+    },
+  });
+
+  async function boot(plugin = makeAllProfilePlugin()) {
+    const { startHttpServer } = await import("./httpServer");
+    const svc = await createMcpService({
+      app: mockApp(),
+      plugin,
+      pluginVersion: "0.4.0-alpha.1",
+      serverName: "mcp-connector",
+    });
+    active.push(svc);
+
+    svc.registry.register(
+      type({ name: '"diag_echo"', arguments: { text: "string" } }).describe(
+        "Echoes",
+      ),
+      () => ({ content: [{ type: "text" as const, text: "echoed" }] }),
+    );
+    svc.registry.register(
+      type({ name: '"diag_soft_error"', arguments: {} }).describe(
+        "Returns an isError result",
+      ),
+      () => ({
+        content: [{ type: "text" as const, text: "soft failure" }],
+        isError: true,
+      }),
+    );
+    svc.registry.register(
+      type({
+        name: '"diag_boom"',
+        arguments: { secretText: "string" },
+      }).describe("Throws, quoting its argument"),
+      (params: { arguments: { secretText: string } }) => {
+        throw new Error(`handler failed on ${params.arguments.secretText}`);
+      },
+    );
+    svc.registry.register(
+      type({ name: '"diag_num"', arguments: { count: "number" } }).describe(
+        "Wants a number",
+      ),
+      () => ({ content: [{ type: "text" as const, text: "counted" }] }),
+    );
+
+    const server = await startHttpServer({
+      resolveTokens: staticTokenProvider(TOKEN),
+      requestHandler: svc.handleRequest,
+    });
+    servers.push(server);
+    return { svc, server };
+  }
+
+  function rpc(
+    port: number,
+    body: unknown,
+    headers: Record<string, string> = {},
+  ): Promise<Response> {
+    return fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        ...headers,
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
+  const callTool = (port: number, name: string, args: unknown, id = 1) =>
+    rpc(port, {
+      jsonrpc: "2.0",
+      id,
+      method: "tools/call",
+      params: { name, arguments: args },
+    });
+
+  test("a legacy tools/call that succeeds writes exactly one INFO tool-call event with every frozen field, and no argument value anywhere", async () => {
+    const { server } = await boot();
+    const res = await callTool(server.port, "diag_echo", { text: ARG_VALUE });
+    expect(res.status).toBe(200);
+    await res.text();
+
+    const all = await lines((a) => has(a, TOOL_CALL_EVENT));
+    const events = named(all, TOOL_CALL_EVENT);
+    expect(events).toHaveLength(1);
+    const event = events[0]!;
+    expect(event.level).toBe("INFO");
+    expect(event.fields.method).toBe("tools/call");
+    expect(event.fields.tool).toBe("diag_echo");
+    expect(event.fields.argKeys).toEqual(["text"]);
+    expect(event.fields.outcome).toBe("ok");
+    expect(event.fields.era).toBe("legacy");
+    expect(event.fields.tokenId).toBe("default");
+    expect(typeof event.fields.durationMs).toBe("number");
+    expect(event.fields.durationMs as number).toBeGreaterThanOrEqual(0);
+
+    expect(written()).not.toContain(ARG_VALUE);
+    expect(written()).not.toContain(TOKEN);
+  });
+
+  test("an isError result gives outcome tool_error", async () => {
+    const { server } = await boot();
+    await (await callTool(server.port, "diag_soft_error", {})).text();
+    const events = named(
+      await lines((a) => has(a, TOOL_CALL_EVENT)),
+      TOOL_CALL_EVENT,
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]?.fields.tool).toBe("diag_soft_error");
+    expect(events[0]?.fields.outcome).toBe("tool_error");
+  });
+
+  test("an adaptive-inactive tool gives outcome inactive_tool", async () => {
+    const { svc, server } = await boot();
+    svc.registry.setAdaptiveDisabled("diag_echo", true);
+    const res = await callTool(server.port, "diag_echo", { text: ARG_VALUE });
+    expect(res.status).toBe(200);
+    await res.text();
+    const events = named(
+      await lines((a) => has(a, TOOL_CALL_EVENT)),
+      TOOL_CALL_EVENT,
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]?.fields.outcome).toBe("inactive_tool");
+  });
+
+  test("a tool that throws writes `Error handling <tool>` at ERROR with a redacted stack and no argument value (R-10)", async () => {
+    const { server } = await boot();
+    const res = await callTool(server.port, "diag_boom", {
+      secretText: ARG_VALUE,
+    });
+    expect(res.status).toBe(200);
+    await res.text();
+
+    const all = await lines(
+      (a) => has(a, "Error handling diag_boom") && has(a, TOOL_CALL_EVENT),
+    );
+    const errors = named(all, "Error handling diag_boom");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.level).toBe("ERROR");
+    const error = errors[0]?.fields.error as Record<string, unknown>;
+    expect(typeof error.stack).toBe("string");
+    expect(error.stack as string).not.toContain(ARG_VALUE);
+    expect(written()).not.toContain(ARG_VALUE);
+
+    const calls = named(all, TOOL_CALL_EVENT);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.fields.outcome).toBe("tool_error");
+  });
+
+  test("the response to a throwing tool and to a validation failure is byte-identical with the logger unconfigured (R-10)", async () => {
+    const { server } = await boot();
+    const snapshot = async () => {
+      const out: Array<{ status: number; type: string | null; body: string }> =
+        [];
+      for (const [name, args] of [
+        ["diag_boom", { secretText: ARG_VALUE }],
+        ["diag_num", { count: "not-a-number-xyz" }],
+      ] as const) {
+        const res = await callTool(server.port, name, args, 7);
+        out.push({
+          status: res.status,
+          type: res.headers.get("content-type"),
+          body: await res.text(),
+        });
+      }
+      return out;
+    };
+
+    const withLogging = await snapshot();
+    await logger.close();
+    const withoutLogging = await snapshot();
+    expect(withLogging).toEqual(withoutLogging);
+    // The client still gets the tool's own message; only the log is scrubbed.
+    expect(withLogging[0]?.body).toContain(ARG_VALUE);
+  });
+
+  test("an ArkType validation failure logs `(was [REDACTED:arg])` and never the offending value", async () => {
+    const { server } = await boot();
+    const res = await callTool(server.port, "diag_num", {
+      count: "not-a-number-xyz",
+    });
+    expect(res.status).toBe(200);
+    await res.text();
+
+    const all = await lines((a) => has(a, "Error handling diag_num"));
+    const text = written();
+    expect(text).toContain("(was [REDACTED:arg])");
+    expect(text).not.toContain("not-a-number-xyz");
+    const errors = named(all, "Error handling diag_num");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.level).toBe("ERROR");
+  });
+
+  test("initialize and tools/list write a DEBUG request event with era and requestedVersion, and nothing at INFO", async () => {
+    const { server } = await boot();
+    await (
+      await rpc(server.port, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "test-client", version: "0.0.0" },
+        },
+      })
+    ).text();
+    await (
+      await rpc(
+        server.port,
+        { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
+        { "mcp-protocol-version": "2025-11-25" },
+      )
+    ).text();
+
+    const all = await lines((a) => {
+      const methods = named(a, REQUEST_EVENT).map((l) => l.fields.method);
+      return methods.includes("initialize") && methods.includes("tools/list");
+    });
+    const requests = named(all, REQUEST_EVENT);
+    const init = requests.find((l) => l.fields.method === "initialize");
+    const list = requests.find((l) => l.fields.method === "tools/list");
+    expect(init).toBeDefined();
+    expect(list).toBeDefined();
+    expect(init?.level).toBe("DEBUG");
+    expect(init?.fields.era).toBe("legacy");
+    expect(init?.fields.requestedVersion).toBe("2025-06-18");
+    expect(init?.fields.status).toBe(200);
+    expect(init?.fields.tokenId).toBe("default");
+    expect(typeof init?.fields.durationMs).toBe("number");
+    expect(list?.level).toBe("DEBUG");
+    expect(list?.fields.era).toBe("legacy");
+    expect(list?.fields.requestedVersion).toBe("2025-11-25");
+
+    const infoTransport = all.filter(
+      (l) => TRANSPORT_EVENTS.includes(l.message) && l.level !== "DEBUG",
+    );
+    expect(infoTransport).toEqual([]);
+  });
+
+  test("at the default level the DEBUG request events are not written, and a tools/call still is", async () => {
+    const { server } = await boot();
+    logger.setLevel("INFO");
+    await (
+      await rpc(server.port, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/list",
+        params: {},
+      })
+    ).text();
+    await (await callTool(server.port, "diag_echo", { text: "hello" })).text();
+
+    const all = await lines((a) => has(a, TOOL_CALL_EVENT));
+    expect(named(all, REQUEST_EVENT)).toEqual([]);
+    expect(named(all, TOOL_CALL_EVENT)).toHaveLength(1);
+  });
+
+  test("a legacy handler that throws before any writeHead logs the status httpServer sends (500) at INFO, and the throw propagates unchanged (ADR-0029 D5)", async () => {
+    const { server } = await boot();
+    logger.setLevel("INFO");
+    const proto = NodeStreamableHTTPServerTransport.prototype;
+    const original = proto.handleRequest;
+    proto.handleRequest = () =>
+      Promise.reject(new Error("boom-before-writeHead"));
+    let res: Response;
+    try {
+      res = await rpc(server.port, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/list",
+        params: {},
+      });
+      await res.text();
+    } finally {
+      proto.handleRequest = original;
+    }
+    // What the client actually receives.
+    expect(res.status).toBe(500);
+
+    // Wait on the ERROR line httpServer always writes, not on the request
+    // event under test: a missing event then fails the assertion below
+    // instead of running out the polling deadline.
+    const all = await lines((a) =>
+      has(a, "[mcp-transport] request handler failed"),
+    );
+    const requests = named(all, REQUEST_EVENT);
+    expect(requests).toHaveLength(1);
+    // The line reports that same status, at INFO so the default level keeps it.
+    expect(requests[0]?.level).toBe("INFO");
+    expect(requests[0]?.fields.status).toBe(500);
+    expect(requests[0]?.fields.method).toBe("tools/list");
+    expect(requests[0]?.fields.era).toBe("legacy");
+    // httpServer's own catch still saw the original error.
+    expect(has(all, "[mcp-transport] request handler failed")).toBe(true);
+  });
+
+  test("a legacy request carrying an unsupported 2026-era header writes exactly one WARN rejection with rung `deferred` and no request event", async () => {
+    const { server } = await boot();
+    // Sent as a batch on purpose. With @modelcontextprotocol/server 2.3.0 a
+    // single envelope-less request carrying a 2026-era header classifies
+    // MODERN (the SDK answers it -32602, `isLegacyRequest` is false), so it
+    // never reaches `applyDeferredVersionRung`. An all-legacy batch is the
+    // only header-only request that classifies legacy and so reaches it.
+    const res = await rpc(
+      server.port,
+      [{ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }],
+      { "mcp-protocol-version": "2027-05-01" },
+    );
+    expect(res.status).toBe(400);
+    await res.text();
+
+    const all = await lines((a) => has(a, VERSION_REJECTED_EVENT));
+    const rejected = named(all, VERSION_REJECTED_EVENT);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.level).toBe("WARN");
+    expect(rejected[0]?.fields.rung).toBe("deferred");
+    expect(rejected[0]?.fields.requested).toBe("2027-05-01");
+    expect(rejected[0]?.fields.era).toBe("legacy");
+    expect(rejected[0]?.fields.tokenId).toBe("default");
+    expect(named(all, REQUEST_EVENT)).toEqual([]);
+  });
+
+  test("the era counter totals are equal with the logger at DEBUG and with it unconfigured, and the five responses are byte-identical (ADR-0016)", async () => {
+    const run = async () => {
+      // Drain whatever earlier tests left in the module-level batch, which
+      // also clears the debounce timer, so this run counts only itself.
+      await flushEraCounters(makeCountingPlugin());
+      const counterPlugin = makeCountingPlugin();
+      const { server } = await boot();
+
+      const sequence: Array<[string, unknown]> = [
+        [
+          "initialize",
+          {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "initialize",
+            params: {
+              protocolVersion: "2025-06-18",
+              capabilities: {},
+              clientInfo: { name: "test-client", version: "0.0.0" },
+            },
+          },
+        ],
+        [
+          "tools/list",
+          { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
+        ],
+        [
+          "tools/call ok",
+          {
+            jsonrpc: "2.0",
+            id: 3,
+            method: "tools/call",
+            params: { name: "diag_echo", arguments: { text: "hello" } },
+          },
+        ],
+        [
+          "tools/call throws",
+          {
+            jsonrpc: "2.0",
+            id: 4,
+            method: "tools/call",
+            params: {
+              name: "diag_boom",
+              arguments: { secretText: "abcdefgh" },
+            },
+          },
+        ],
+        [
+          "prompts/list",
+          { jsonrpc: "2.0", id: 5, method: "prompts/list", params: {} },
+        ],
+      ];
+      const responses: Array<{
+        step: string;
+        status: number;
+        type: string | null;
+        body: string;
+      }> = [];
+      for (const [step, body] of sequence) {
+        const res = await rpc(server.port, body);
+        responses.push({
+          step,
+          status: res.status,
+          type: res.headers.get("content-type"),
+          body: await res.text(),
+        });
+      }
+      await flushEraCounters(counterPlugin);
+      const data = (await counterPlugin.loadData()) as {
+        mcpTransport?: { eraCounters?: { legacy: number; modern: number } };
+      };
+      return { responses, eras: data.mcpTransport?.eraCounters };
+    };
+
+    const logged = await run();
+    await logger.close();
+    const unlogged = await run();
+
+    expect(logged.eras).toEqual({ legacy: 5, modern: 0 });
+    expect(unlogged.eras).toEqual(logged.eras);
+    expect(unlogged.responses).toEqual(logged.responses);
   });
 });

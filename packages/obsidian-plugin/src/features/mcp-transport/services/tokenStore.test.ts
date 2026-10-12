@@ -1,8 +1,11 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mockPlugin } from "$/test-setup";
 import type McpToolsPlugin from "$/main";
 import { logger } from "$/shared/logger";
+import { createMemoryLogFs } from "$/shared/log/memoryLogFs";
+import { REDACTED_SECRET, REDACTED_TOKEN } from "$/shared/log/redact";
 import {
+  addToken,
   ensureTokenStore,
   readTokens,
   regenerateToken,
@@ -855,5 +858,98 @@ describe("revokeToken", () => {
       promoted: [],
       allowed: null,
     });
+  });
+});
+
+/**
+ * Known secrets feed the redactor (ADR-0029 D3, SPEC R-05). The token store
+ * is the one place that sees every secret, so reading or writing the list
+ * registers them; a logged string holding one is then written with
+ * `REDACTED_SECRET`, which is a different placeholder from the one the
+ * token-shaped pattern would give. Asserting `REDACTED_SECRET` is therefore
+ * what proves the secret was REMEMBERED rather than merely pattern-matched.
+ */
+describe("diagnostic log — token secrets reach the redactor", () => {
+  const LOG_PATH = "/mem/diagnostic.log";
+  let memory = createMemoryLogFs();
+
+  beforeEach(async () => {
+    await logger.close();
+    memory = createMemoryLogFs();
+    logger.configure({ dir: "/mem", level: "DEBUG", fs: memory });
+  });
+  afterEach(async () => {
+    await logger.close();
+  });
+
+  async function written(): Promise<string> {
+    await logger.flush();
+    return memory.files.get(LOG_PATH) ?? "";
+  }
+
+  // 40 characters, none of them confined to base64url: `+/=!` defeat the
+  // token-shaped pattern, so only a remembered secret can catch it.
+  const LEGACY_SECRET = "Zq+/=!7k".repeat(5);
+
+  test("readTokens registers every stored secret, including a hand-set non-base64url legacy one", async () => {
+    const modern = "Qm9-_x7LpR2sT4vWy6Ab8CdEfGhIjK0nOu1XzYc3Dm5";
+    const { plugin } = makePlugin({
+      mcpTransport: {
+        tokens: [
+          { id: "legacy", label: "Legacy", token: LEGACY_SECRET, createdAt: 1 },
+          { id: "modern", label: "Modern", token: modern, createdAt: 2 },
+        ],
+      },
+    });
+
+    await readTokens(plugin);
+    logger.info(`legacy ${LEGACY_SECRET}`, {
+      nested: { value: LEGACY_SECRET },
+    });
+    logger.info(`modern ${modern}`);
+
+    const text = await written();
+    expect(text).not.toContain(LEGACY_SECRET);
+    expect(text).not.toContain(modern);
+    expect(text).toContain(REDACTED_SECRET);
+    // The modern secret is caught as a known secret, not by its shape.
+    const lines = text.split("\n").filter((l) => l !== "");
+    const modernLine = lines.find((l) => l.includes("modern "));
+    expect(modernLine).toContain(REDACTED_SECRET);
+    expect(modernLine).not.toContain(REDACTED_TOKEN);
+  });
+
+  test("addToken registers the new secret", async () => {
+    const { plugin } = makePlugin();
+    const created = await addToken(plugin, "New client");
+
+    logger.info(`minted ${created.token}`);
+
+    const text = await written();
+    expect(text).not.toContain(created.token);
+    const line = text.split("\n").find((l) => l.includes("minted"));
+    expect(line).toContain(REDACTED_SECRET);
+    expect(line).not.toContain(REDACTED_TOKEN);
+  });
+
+  test("regenerateToken registers the new secret, and the old one stays scrubbed", async () => {
+    const { plugin } = makePlugin();
+    const created = await addToken(plugin, "Rotating client");
+    // Read it back, as a request would: this is what registers the old
+    // secret in a fresh process.
+    await readTokens(plugin);
+    const regenerated = await regenerateToken(plugin, created.id);
+    expect(regenerated.token).not.toBe(created.token);
+
+    logger.info(`old ${created.token}`);
+    logger.info(`new ${regenerated.token}`);
+
+    const text = await written();
+    expect(text).not.toContain(created.token);
+    expect(text).not.toContain(regenerated.token);
+    const oldLine = text.split("\n").find((l) => l.includes('"old '));
+    const newLine = text.split("\n").find((l) => l.includes('"new '));
+    expect(oldLine).toContain(REDACTED_SECRET);
+    expect(newLine).toContain(REDACTED_SECRET);
   });
 });

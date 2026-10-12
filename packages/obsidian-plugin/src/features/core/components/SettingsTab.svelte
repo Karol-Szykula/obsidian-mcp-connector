@@ -5,6 +5,7 @@
   import { FeatureSettings as McpToolsSettings } from "src/features/mcp-tools";
   import { AccessControlSection } from "src/features/mcp-transport";
   import { ClaudeDesktopIntegrationSection } from "src/features/mcp-client-config";
+  import { FeatureSettings as DiagnosticsSettings } from "src/features/diagnostics";
   import type McpServerPlugin from "src/main";
 
   // 0.4.0 no longer ships an external `mcp-server` binary — the MCP
@@ -56,4 +57,5 @@
     on:policychange={() => (policyRevision += 1)}
   />
   <McpToolsSettings {plugin} />
+  <DiagnosticsSettings {plugin} />
 </div>

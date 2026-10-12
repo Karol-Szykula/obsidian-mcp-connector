@@ -7,8 +7,9 @@
  * Usage (from the repo root):
  *   NODE_ENV=production bun packages/obsidian-plugin/scripts/bench.ts
  *
- * NODE_ENV=production keeps `$/shared/logger` on `console` instead of
- * the file-writing dev logger.
+ * NODE_ENV=production is no longer needed to keep the logger off the
+ * disk: `$/shared/logger` stays unconfigured here, and an unconfigured
+ * logger never touches the file system (ADR-0029 D1).
  *
  * Benchmarks:
  *   1. recordCall            — per-tool-call settings write (adaptive-tool-loading)
