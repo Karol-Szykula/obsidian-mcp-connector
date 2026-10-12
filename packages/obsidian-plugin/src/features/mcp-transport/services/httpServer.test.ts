@@ -7,6 +7,8 @@ import {
 } from "./httpServer";
 import { staticTokenProvider } from "./tokenStore";
 import { MAX_REQUEST_BODY_BYTES, PORT_RANGE } from "../constants";
+import { captureLogLines } from "$/shared/log/logCapture";
+import { REQUEST_EVENT, VERSION_REJECTED_EVENT } from "./requestLog";
 
 const running: RunningServer[] = [];
 afterEach(async () => {
@@ -422,5 +424,116 @@ describe("startHttpServer — multi-token resolveTokens (issue #348, ADR-0014)",
 
     expect(res.status).toBe(401);
     expect(handlerCalled).toBe(false);
+  });
+});
+
+/**
+ * Diagnostic log at the middleware layer (ADR-0029 D5, SPEC R-07, R-08).
+ *
+ * Reads the lines actually written, after redaction, from an in-memory file
+ * system the logger is configured onto, through `captureLogLines`.
+ */
+describe("diagnostic log — middleware refusals and the pre-2026 version rung", () => {
+  const TOKEN = "t".repeat(32);
+  const { lines, has, named, written } = captureLogLines();
+
+  async function boot() {
+    const server = await startHttpServer({
+      resolveTokens: staticTokenProvider(TOKEN),
+      requestHandler: async (_req, res) => {
+        res.writeHead(200);
+        res.end("ok");
+      },
+    });
+    running.push(server);
+    return server;
+  }
+
+  test("a pre-2026 unsupported header writes a WARN with rung `middleware`, the requested value and no tokenId key", async () => {
+    const server = await boot();
+    const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        "content-type": "application/json",
+        "mcp-protocol-version": "2023-01-01",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {},
+      }),
+    });
+    expect(res.status).toBe(400);
+    await res.text();
+
+    const all = await lines((a) => has(a, VERSION_REJECTED_EVENT));
+    const rejected = named(all, VERSION_REJECTED_EVENT);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.level).toBe("WARN");
+    expect(rejected[0]?.fields.rung).toBe("middleware");
+    expect(rejected[0]?.fields.requested).toBe("2023-01-01");
+    expect("tokenId" in (rejected[0]?.fields ?? {})).toBe(false);
+    expect("era" in (rejected[0]?.fields ?? {})).toBe(false);
+    // One line per rejected request: the WARN replaces the request event.
+    expect(named(all, REQUEST_EVENT)).toEqual([]);
+  });
+
+  test("a 401 writes one INFO request event {status: 401, reason: auth}, and nothing token-shaped even though the header carried a 43-character token", async () => {
+    const server = await boot();
+    const presented = "aB3_-xY9".repeat(6).slice(0, 43);
+    expect(presented).toHaveLength(43);
+    const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${presented}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/list",
+        params: {},
+      }),
+    });
+    expect(res.status).toBe(401);
+    await res.text();
+
+    const all = await lines((a) => has(a, REQUEST_EVENT));
+    const requests = named(all, REQUEST_EVENT);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.level).toBe("INFO");
+    expect(requests[0]?.fields.status).toBe(401);
+    expect(requests[0]?.fields.reason).toBe("auth");
+    expect("tokenId" in (requests[0]?.fields ?? {})).toBe(false);
+
+    const text = written();
+    expect(text).not.toContain(presented);
+    expect(text).not.toContain(presented.slice(0, 20));
+    expect(text).not.toContain(TOKEN);
+  });
+
+  test("a declared-length 413 writes one INFO request event with reason `too_large`", async () => {
+    const server = await boot();
+    const res = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: "x".repeat(MAX_REQUEST_BODY_BYTES + 1),
+    });
+    expect(res.status).toBe(413);
+    await res.text().catch(() => "");
+
+    const requests = named(
+      await lines((a) => has(a, REQUEST_EVENT)),
+      REQUEST_EVENT,
+    );
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.level).toBe("INFO");
+    expect(requests[0]?.fields.status).toBe(413);
+    expect(requests[0]?.fields.reason).toBe("too_large");
   });
 });

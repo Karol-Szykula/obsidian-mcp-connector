@@ -21,6 +21,7 @@ import {
   enableSettingsReadCache,
 } from "./shared/settingsReadCache";
 import { setup as setupCore } from "./features/core";
+import { setup as setupDiagnostics } from "./features/diagnostics";
 import {
   setup as mcpTransportSetup,
   teardown as mcpTransportTeardown,
@@ -136,6 +137,14 @@ export default class McpToolsPlugin extends Plugin {
     enableSettingsReadCache(this);
     // Before the first await, so onunload always has it to close
     this.brokerHost = createBrokerHost({ pluginId: this.manifest.id });
+
+    // The diagnostic log first, so every later feature's lines land in it
+    // (ADR-0029). Never throws.
+    await setupDiagnostics(this);
+    logger.info("MCP Tools Plugin loading", {
+      pluginVersion: this.manifest.version,
+      platform: process.platform,
+    });
 
     // Initialize features in order
     await setupCore(this);
@@ -255,6 +264,7 @@ export default class McpToolsPlugin extends Plugin {
 
   // eslint-disable-next-line @typescript-eslint/no-misused-promises -- Obsidian calls onunload synchronously; the returned Promise is not awaited by the plugin lifecycle
   async onunload() {
+    logger.info("MCP Tools Plugin unloading");
     // First and synchronous: no queued transport or route operation runs
     // after this, and one still running tears down what it creates
     this.routeQueue.close();
@@ -287,5 +297,8 @@ export default class McpToolsPlugin extends Plugin {
       await semanticSearchTeardown(this.semanticSearchState);
       this.semanticSearchState = undefined;
     }
+    // Last: drains the teardown lines above, best-effort, then detaches.
+    // Obsidian never awaits onunload, so this does not block the unload.
+    await logger.close();
   }
 }

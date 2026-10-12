@@ -110,7 +110,11 @@ export async function readTokens(
   plugin: PluginDataLike,
 ): Promise<TokenRecord[]> {
   const slice = await new SettingsStore(plugin).readSlice(TRANSPORT_SLICE);
-  return parseTokens(isRecord(slice) ? slice.tokens : undefined);
+  const tokens = parseTokens(isRecord(slice) ? slice.tokens : undefined);
+  // Every secret this process sees is scrubbed from the diagnostic log,
+  // whatever its format (ADR-0029 D3).
+  logger.rememberSecrets(tokens.map((t) => t.token));
+  return tokens;
 }
 
 /**
@@ -119,6 +123,7 @@ export async function readTokens(
  * when the result is structurally identical.
  */
 function withTokens(current: unknown, tokens: readonly TokenRecord[]): unknown {
+  logger.rememberSecrets(tokens.map((t) => t.token));
   const slice = isRecord(current) ? current : {};
   const next = { ...slice, tokens, bearerToken: tokens[0].token };
   return jsonEqual(current, next) ? current : next;

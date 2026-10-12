@@ -574,7 +574,20 @@ curl http://127.0.0.1:27200/_obsidian_mcp_broker/health
 | `.mcpb` disconnected most of the time | Fixed in v0.26.0, which stopped baking the port and token into the manifest. Update and re-export once. |
 | First `search_vault_smart` is slow | Expected: ~25 MB model download, cached afterwards. A `content-length` warning in DevTools is harmless. |
 
-On the built-in-Node path Claude Desktop does not write the connector's own stderr to `mcp-server-Obsidian MCP Connector.log`, so the startup banner and per-request lines are missing there even when everything works. To collect them, run the extension's `server/index.js` directly, or turn the setting off for the test. General logs: Settings → **Open Logs**, or Obsidian's console (`Cmd+Opt+I` / `Ctrl+Shift+I`).
+On the built-in-Node path Claude Desktop does not write the connector's own stderr to `mcp-server-Obsidian MCP Connector.log`, so the startup banner and per-request lines are missing there even when everything works. To collect them, run the extension's `server/index.js` directly, or turn the setting off for the test. The plugin's own log is the [diagnostic log](#diagnostic-log) below.
+
+### Diagnostic log
+
+The plugin writes what it does to a log file in its own folder: MCP requests, protocol negotiation, server start and stop, the shared broker route, semantic search start-up and tool errors with their stack.
+
+- **Where it lives:** `<vault>/.obsidian/plugins/<plugin folder>/diagnostic.log`. The plugin folder is `mcp-tools-istefox` by default. Settings → MCP Connector → **Diagnostics** shows the full path, and **Show in folder** opens it in your file manager.
+- **How big it gets:** 5 MB per file, 5 files, about 25 MB. When the file is full it is renamed to `diagnostic.1.log` and the oldest of `diagnostic.1.log` … `diagnostic.4.log` is dropped.
+- **What is removed from it, where known:** bearer tokens, tool argument values (only their names), note content, and absolute paths, which are written as `<vault>`, `<plugin>` or `<home>`. A tool argument value shorter than 4 characters can survive inside a tool's error message.
+- **What can be in it:** vault-relative note paths in some failure lines, such as an indexing error naming the note it could not read. Review a copied tail before you post it publicly.
+- **Level:** INFO by default. Switch **Log level** to DEBUG while you reproduce a problem, which adds every `tools/list`, `initialize` and `server/discover` request, then back to INFO. The change applies at once and survives a restart.
+- **Attaching it to an issue:** click **Copy last 200 lines** and paste them into the issue, or attach `diagnostic.log` itself. **Clear log** deletes the file and its rotated copies after asking.
+
+The log is a plain file in the vault, so a vault synced through iCloud or another service syncs it too. The plugin no longer writes to Obsidian's developer console.
 
 ## Security
 

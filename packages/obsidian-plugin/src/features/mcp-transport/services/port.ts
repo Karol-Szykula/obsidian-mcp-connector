@@ -86,6 +86,10 @@ export async function bindWithFallback(
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EADDRINUSE") throw err;
       // Port is taken — try the next one in the range
+      logger.warn("MCP Connector HTTP server port busy", {
+        port,
+        code: "EADDRINUSE",
+      });
     }
   }
   throw new Error(`No free port in range: ${ports.join(", ")}`);

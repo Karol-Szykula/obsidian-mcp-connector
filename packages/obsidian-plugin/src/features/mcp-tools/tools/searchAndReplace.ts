@@ -1,6 +1,7 @@
 import { type } from "arktype";
 import type { App } from "obsidian";
 import { logger } from "$/shared/logger";
+import { scrubArgumentValues } from "$/shared/log/redact";
 import { withVaultWriteLock } from "$/features/mcp-tools/services/vaultWriteLock";
 import { errorJson } from "../services/responseBuilders";
 import { compileSafeRegex, makeScopeFilter } from "../services/safeRegex";
@@ -67,10 +68,11 @@ export async function searchAndReplaceHandler(
   const compiled = compileSafeRegex(pattern, flags);
   if (!compiled.ok) {
     if (compiled.errorCode === "invalid_regex") {
+      // The RegExp error text quotes the pattern and flags, both user
+      // input: occurrences of 4 characters or more are scrubbed, shorter
+      // ones (any flags string, a tiny pattern) stay (ADR-0029 D4).
       logger.warn("search_and_replace: invalid regex", {
-        pattern,
-        flags,
-        error: compiled.message,
+        error: scrubArgumentValues(compiled.message, { pattern, flags }),
       });
       return errorJson(compiled.message, "invalid_regex", { pattern, flags });
     }

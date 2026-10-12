@@ -1,5 +1,5 @@
 // searchAndReplace.test.ts
-import { describe, expect, test, beforeEach } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import {
   searchAndReplaceHandler,
   searchAndReplaceSchema,
@@ -10,6 +10,9 @@ import {
   setMockFile,
   setMockModifyFail,
 } from "$/test-setup";
+
+import { logger } from "$/shared/logger";
+import { createMemoryLogFs } from "$/shared/log/memoryLogFs";
 
 beforeEach(() => resetMockVault());
 
@@ -155,5 +158,58 @@ describe("search_and_replace tool", () => {
     const app2 = mockApp();
     const fOk = app2.vault.getAbstractFileByPath("ok.md");
     expect(await app2.vault.read(fOk as never)).toBe("done");
+  });
+});
+
+/**
+ * R-05: an invalid regex is logged without the pattern, the flags or the
+ * pattern text the RegExp error quotes. The pattern is the user's own text,
+ * the same class of value as a note's content. Read back from an in-memory
+ * file system the logger is configured onto.
+ */
+describe("search_and_replace — invalid regex log line (R-05)", () => {
+  const LOG_PATH = "/mem/diagnostic.log";
+  const PATTERN = "[unclosed-private-pattern";
+  type Line = {
+    level: string;
+    message: string;
+    fields: Record<string, unknown>;
+  };
+  let memory = createMemoryLogFs();
+
+  beforeEach(async () => {
+    await logger.close();
+    memory = createMemoryLogFs();
+    logger.configure({ dir: "/mem", level: "DEBUG", fs: memory });
+  });
+  afterEach(async () => {
+    await logger.close();
+  });
+
+  test("the WARN line holds neither the pattern, nor the flags, nor the pattern text inside the RegExp error", async () => {
+    const r = await searchAndReplaceHandler({
+      arguments: { pattern: PATTERN, replacement: "x", flags: "gims" },
+      app: mockApp(),
+    });
+    // The client-facing error is unchanged by this work.
+    expect(r.isError).toBe(true);
+    expect(JSON.parse(r.content[0].text as string).errorCode).toBe(
+      "invalid_regex",
+    );
+
+    await logger.flush();
+    const text = memory.files.get(LOG_PATH) ?? "";
+    const lines = text
+      .split("\n")
+      .filter((l) => l !== "")
+      .map((l) => JSON.parse(l) as Line)
+      .filter((l) => l.message === "search_and_replace: invalid regex");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.level).toBe("WARN");
+    expect("pattern" in (lines[0]?.fields ?? {})).toBe(false);
+    expect("flags" in (lines[0]?.fields ?? {})).toBe(false);
+    expect(typeof lines[0]?.fields.error).toBe("string");
+    expect(text).not.toContain("unclosed-private-pattern");
+    expect(text).not.toContain("gims");
   });
 });

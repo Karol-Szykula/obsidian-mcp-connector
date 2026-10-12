@@ -181,5 +181,8 @@ export async function setup(
  */
 export async function teardown(state: McpTransportState): Promise<void> {
   await stopHttpServer(state.server);
+  logger.info("MCP Connector HTTP server stopped", {
+    port: state.server.port,
+  });
   await destroyMcpService(state.mcp);
 }

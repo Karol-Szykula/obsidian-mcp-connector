@@ -1,8 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   isIndexableFile,
   probeAndWipeStaleStores,
   purgeExcludedFromStores,
+  wireSemanticSearch,
 } from "./productionWiring";
 import { createEmbeddingStoreRegistry } from "./storeRegistry";
 import {
@@ -12,6 +13,9 @@ import {
 } from "./store";
 import { compilePolicy, EMPTY_POLICY } from "$/shared/pathPolicy";
 import { TFile } from "obsidian";
+import { mockPlugin } from "$/test-setup";
+import { logger } from "$/shared/logger";
+import { createMemoryLogFs } from "$/shared/log/memoryLogFs";
 
 /** In-memory adapter tracking text + binary files and remove() calls. */
 function memAdapter() {
@@ -271,5 +275,69 @@ describe("purgeExcludedFromStores", () => {
     // point of probing before touching a provider's bin.
     expect(mem.files.size).toBe(0);
     expect(mem.bins.size).toBe(0);
+  });
+});
+
+/**
+ * R-09: a successful semantic-search wiring is logged. The line is read back
+ * from an in-memory file system the logger is configured onto.
+ */
+describe("diagnostic log — semantic-search started", () => {
+  const LOG_PATH = "/mem/diagnostic.log";
+  type Line = {
+    level: string;
+    message: string;
+    fields: Record<string, unknown>;
+  };
+  let memory = createMemoryLogFs();
+
+  beforeEach(async () => {
+    await logger.close();
+    memory = createMemoryLogFs();
+    logger.configure({ dir: "/mem", level: "DEBUG", fs: memory });
+  });
+  afterEach(async () => {
+    await logger.close();
+  });
+
+  /** A plugin whose vault adapter is in memory and whose layout never becomes ready. */
+  function wiringPlugin() {
+    const mem = memAdapter();
+    let data: Record<string, unknown> = {};
+    const plugin = mockPlugin({
+      loadData: async () => data,
+      saveData: async (next: unknown) => {
+        data = next as Record<string, unknown>;
+      },
+    });
+    const app = plugin.app as unknown as {
+      vault: Record<string, unknown>;
+      workspace: Record<string, unknown>;
+    };
+    app.vault.adapter = mem.adapter;
+    app.vault.configDir = ".obsidian";
+    app.workspace.onLayoutReady = () => {};
+    (plugin.manifest as { dir?: string }).dir = "/p";
+    return plugin;
+  }
+
+  test("a successful wiring writes `semantic-search: started` at INFO with a provider", async () => {
+    const plugin = wiringPlugin();
+    const state = await wireSemanticSearch(plugin);
+    expect(state).toBeDefined();
+    try {
+      await logger.flush();
+      const lines = (memory.files.get(LOG_PATH) ?? "")
+        .split("\n")
+        .filter((l) => l !== "")
+        .map((l) => JSON.parse(l) as Line)
+        .filter((l) => l.message === "semantic-search: started");
+      expect(lines).toHaveLength(1);
+      expect(lines[0]?.level).toBe("INFO");
+      expect(typeof lines[0]?.fields.provider).toBe("string");
+      expect((lines[0]?.fields.provider as string).length).toBeGreaterThan(0);
+    } finally {
+      await state?.teardown();
+    }
   });
 });

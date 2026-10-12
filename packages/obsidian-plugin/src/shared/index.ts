@@ -1,6 +1,8 @@
 import type { App } from "obsidian";
 import type { SmartConnections, Templater } from "shared";
 import type McpToolsPlugin from "src/main";
+import { scrubArgumentValues } from "./log/redact";
+import { logger } from "./logger";
 
 // Augment Obsidian's App type to include the (undocumented) plugin
 // registry. Relocated from the retired mcp-server-install/types.ts —
@@ -131,7 +133,19 @@ export function detectSmartConnections(
             ReturnType<SmartConnections.SmartSearch["search"]>
           >;
         } catch (error) {
-          console.error("Smart Connections v3.0 search error:", error);
+          // The error text can quote the user's query or filter: scrub
+          // both out before the line reaches the log (ADR-0029 D4).
+          const args = { search_text, filter };
+          logger.error("Smart Connections search failed", {
+            error:
+              error instanceof Error
+                ? {
+                    name: error.name,
+                    message: scrubArgumentValues(error.message, args),
+                    stack: scrubArgumentValues(error.stack ?? "", args),
+                  }
+                : scrubArgumentValues(String(error), args),
+          });
           return [];
         }
       },

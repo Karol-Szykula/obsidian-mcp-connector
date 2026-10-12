@@ -7,6 +7,12 @@ import {
 import { logger } from "$/shared";
 import { buildProtocolVersionErrorBody, runMiddleware } from "./middleware";
 import { readBodyWithCap } from "./parseRequestBody";
+import {
+  describeRequest,
+  refusalReason,
+  REQUEST_EVENT,
+  VERSION_REJECTED_EVENT,
+} from "./requestLog";
 import type { TokenRecord } from "./tokenStore";
 import { bindWithFallback } from "./port";
 import { ERROR_CODES, MAX_REQUEST_BODY_BYTES, PORT_RANGE } from "../constants";
@@ -109,10 +115,21 @@ export async function startHttpServer(
           res.writeHead(check.status, { "content-type": "application/json" });
           res.end(JSON.stringify(buildProtocolVersionErrorBody(parsedBody)));
           if (rawBody === null) req.destroy();
+          // Before auth: no token id, and no era yet (ADR-0029 D5).
+          logger.warn(VERSION_REJECTED_EVENT, {
+            requested: describeRequest(parsedBody, req.headers)
+              .requestedVersion,
+            rung: "middleware",
+          });
           return;
         }
         res.writeHead(check.status);
         res.end();
+        // Status and reason only: no token id, no header, no URL.
+        logger.info(REQUEST_EVENT, {
+          status: check.status,
+          reason: refusalReason(check.status),
+        });
         return;
       }
 
@@ -132,6 +149,10 @@ export async function startHttpServer(
         res.writeHead(ERROR_CODES.PAYLOAD_TOO_LARGE);
         res.end();
         req.destroy();
+        logger.info(REQUEST_EVENT, {
+          status: ERROR_CODES.PAYLOAD_TOO_LARGE,
+          reason: refusalReason(ERROR_CODES.PAYLOAD_TOO_LARGE),
+        });
         return;
       }
 

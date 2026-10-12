@@ -14,6 +14,8 @@ import {
 } from "$/features/mcp-transport/services/tokenStore";
 import type { McpTransportState } from "$/features/mcp-transport/services/setup";
 import { SettingsStore } from "$/shared/settingsStore";
+import { logger } from "$/shared/logger";
+import { createMemoryLogFs } from "$/shared/log/memoryLogFs";
 import { BROKER_NAME } from "./brokerServer";
 import {
   codexConfigSnippet,
@@ -1793,5 +1795,58 @@ describe("route lifecycle", () => {
     expect(
       JSON.parse((await call(port, routeOf(restarted), secretFor("a1"))).body),
     ).toEqual({ vault: "restarted", tokenId: "a1" });
+  });
+});
+
+/**
+ * R-09 and R-05: a successful registration is logged, and the line never
+ * carries the route id or the access token. Read back from an in-memory
+ * file system the logger is configured onto, so it is what is actually
+ * written, after redaction.
+ */
+describe("diagnostic log — broker route registered", () => {
+  const LOG_PATH = "/mem/diagnostic.log";
+  type Line = {
+    level: string;
+    message: string;
+    fields: Record<string, unknown>;
+  };
+  let memory = createMemoryLogFs();
+
+  beforeEach(async () => {
+    await logger.close();
+    memory = createMemoryLogFs();
+    logger.configure({ dir: "/mem", level: "DEBUG", fs: memory });
+  });
+  afterEach(async () => {
+    await logger.close();
+  });
+
+  test("a successful registration writes `Broker route registered` {brokerPort, transportPort} and neither the route id nor the access token", async () => {
+    const plugin = fakePlugin(withTokens("a"));
+    const host = fakeHost();
+    host.port = 27200;
+    const runtime = await startDiscovery(plugin, fakeOpts(host));
+    runtimes.push(runtime);
+    expect(runtime.status.state).toBe("connected");
+
+    await logger.flush();
+    const text = memory.files.get(LOG_PATH) ?? "";
+    const lines = text
+      .split("\n")
+      .filter((l) => l !== "")
+      .map((l) => JSON.parse(l) as Line)
+      .filter((l) => l.message === "Broker route registered");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.level).toBe("INFO");
+    expect(lines[0]?.fields).toEqual({
+      brokerPort: 27200,
+      transportPort: 27201,
+    });
+
+    const settings = storedSettings(plugin);
+    expect(text).not.toContain(runtime.routeId);
+    expect(text).not.toContain(settings.accessToken as string);
+    expect(text).not.toContain(secretFor("a"));
   });
 });

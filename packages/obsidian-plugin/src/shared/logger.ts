@@ -1,21 +1,17 @@
-import {
-  createLogger,
-  loggerConfigMorph,
-  type InputLoggerConfig,
-} from "shared";
+import { createLogger, type Logger } from "./log/createLogger";
 
-const isProd = process.env.NODE_ENV === "production";
-
-export const LOGGER_CONFIG: InputLoggerConfig = {
-  appName: "Claude",
-  filename: "obsidian-plugin-mcp-tools.log",
-  level: "DEBUG",
-};
-
-// Validates LOGGER_CONFIG at module load; the morph's output is not used.
-loggerConfigMorph.assert(LOGGER_CONFIG);
+export type { LogLevel, LogFields } from "./log/logLine";
+export type { Logger, LoggerConfig } from "./log/createLogger";
 
 /**
- * In production, we use the console. During development, the logger writes logs to a file in the same folder as the server log file.
+ * The plugin's one logger (ADR-0029). Unconfigured until the diagnostics
+ * feature calls `configure()` at load; until then it holds a bounded
+ * number of entries in memory and never touches the disk.
+ *
+ * The default failure warning is the single sanctioned `console` call in
+ * plugin code: one line per failure episode, when the log file cannot be
+ * written (ADR-0029 D6, D8).
  */
-export const logger = isProd ? console : createLogger(LOGGER_CONFIG);
+export const logger: Logger = createLogger({
+  warn: (message) => console.warn(message),
+});

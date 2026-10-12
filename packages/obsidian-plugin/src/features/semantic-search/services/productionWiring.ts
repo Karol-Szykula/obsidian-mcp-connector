@@ -487,6 +487,9 @@ export async function wireSemanticSearch(
       }
     };
 
+    logger.info("semantic-search: started", {
+      provider: state.settings.provider,
+    });
     return state;
   } else {
     logger.error("Semantic search setup failed", {
