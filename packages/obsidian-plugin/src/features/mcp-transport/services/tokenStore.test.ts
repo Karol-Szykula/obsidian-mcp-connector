@@ -1,8 +1,8 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mockPlugin } from "$/test-setup";
 import type McpToolsPlugin from "$/main";
 import { logger } from "$/shared/logger";
-import { createMemoryLogFs } from "$/shared/log/memoryLogFs";
+import { captureLogLines } from "$/shared/log/logCapture";
 import { REDACTED_SECRET, REDACTED_TOKEN } from "$/shared/log/redact";
 import {
   addToken,
@@ -870,21 +870,12 @@ describe("revokeToken", () => {
  * what proves the secret was REMEMBERED rather than merely pattern-matched.
  */
 describe("diagnostic log — token secrets reach the redactor", () => {
-  const LOG_PATH = "/mem/diagnostic.log";
-  let memory = createMemoryLogFs();
+  const capture = captureLogLines();
 
-  beforeEach(async () => {
-    await logger.close();
-    memory = createMemoryLogFs();
-    logger.configure({ dir: "/mem", level: "DEBUG", fs: memory });
-  });
-  afterEach(async () => {
-    await logger.close();
-  });
-
+  /** Each test logs its own lines synchronously: nothing to wait for. */
   async function written(): Promise<string> {
-    await logger.flush();
-    return memory.files.get(LOG_PATH) ?? "";
+    await capture.lines(() => true);
+    return capture.written();
   }
 
   // 40 characters, none of them confined to base64url: `+/=!` defeat the

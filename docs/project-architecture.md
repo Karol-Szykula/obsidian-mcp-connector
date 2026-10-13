@@ -24,11 +24,12 @@ The project is a Bun monorepo:
     ├── obsidian-plugin/   # Obsidian plugin (in-process MCP server)
     │   └── src/
     │       ├── features/  # Feature modules
+    │       ├── shared/
+    │       │   └── log/   # Diagnostic logger (file sink, redaction)
     │       └── main.ts    # Plugin entry point
     └── shared/            # Shared utilities and types
         └── src/
             ├── types/     # Common interfaces
-            ├── logger.ts  # Shared logger
             └── index.ts   # Public API
 ```
 

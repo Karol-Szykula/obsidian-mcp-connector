@@ -587,7 +587,7 @@ The plugin writes what it does to a log file in its own folder: MCP requests, pr
 - **Level:** INFO by default. Switch **Log level** to DEBUG while you reproduce a problem, which adds every `tools/list`, `initialize` and `server/discover` request, then back to INFO. The change applies at once and survives a restart.
 - **Attaching it to an issue:** click **Copy last 200 lines** and paste them into the issue, or attach `diagnostic.log` itself. **Clear log** deletes the file and its rotated copies after asking.
 
-The log is a plain file in the vault, so a vault synced through iCloud or another service syncs it too. The plugin no longer writes to Obsidian's developer console.
+The log is a plain file in the vault, so a vault synced through iCloud or another service syncs it too. The plugin no longer writes to Obsidian's developer console, with one exception: when the log file itself cannot be written, it prints a single warning there for each run of failures.
 
 ## Security
 

@@ -1,9 +1,8 @@
-import { describe, expect, test, afterEach, beforeEach } from "bun:test";
+import { describe, expect, test, afterEach } from "bun:test";
 import { createServer, type Server } from "node:http";
 import { bindWithFallback, resolvePorts } from "./port";
 import { BROKER_PORT, PORT_RANGE } from "../constants";
-import { logger } from "$/shared/logger";
-import { createMemoryLogFs } from "$/shared/log/memoryLogFs";
+import { captureLogLines } from "$/shared/log/logCapture";
 
 const openServers: Server[] = [];
 
@@ -121,32 +120,8 @@ describe("resolvePorts with the broker port and a last live port", () => {
  * EADDRINUSE, at WARN, and the bind then carries on to the next port.
  */
 describe("diagnostic log — port busy", () => {
-  const LOG_PATH = "/mem/diagnostic.log";
   const BUSY = "MCP Connector HTTP server port busy";
-  type Line = {
-    level: string;
-    message: string;
-    fields: Record<string, unknown>;
-  };
-  let memory = createMemoryLogFs();
-
-  beforeEach(async () => {
-    await logger.close();
-    memory = createMemoryLogFs();
-    logger.configure({ dir: "/mem", level: "DEBUG", fs: memory });
-  });
-  afterEach(async () => {
-    await logger.close();
-  });
-
-  async function busyLines(): Promise<Line[]> {
-    await logger.flush();
-    return (memory.files.get(LOG_PATH) ?? "")
-      .split("\n")
-      .filter((l) => l !== "")
-      .map((l) => JSON.parse(l) as Line)
-      .filter((l) => l.message === BUSY);
-  }
+  const { lines, has, named } = captureLogLines();
 
   test("an EADDRINUSE on the first port writes a WARN {port, code}, and the bind then succeeds on the next port", async () => {
     const { port: p0 } = await occupyFreePort();
@@ -158,10 +133,10 @@ describe("diagnostic log — port busy", () => {
     const bound = await bindWithFallback(server, [p0, p1]);
     expect(bound).toBe(p1);
 
-    const lines = await busyLines();
-    expect(lines).toHaveLength(1);
-    expect(lines[0]?.level).toBe("WARN");
-    expect(lines[0]?.fields).toEqual({ port: p0, code: "EADDRINUSE" });
+    const busy = named(await lines((a) => has(a, BUSY)), BUSY);
+    expect(busy).toHaveLength(1);
+    expect(busy[0]?.level).toBe("WARN");
+    expect(busy[0]?.fields).toEqual({ port: p0, code: "EADDRINUSE" });
   });
 
   test("one line per busy port, in order, when the whole list is taken", async () => {
@@ -174,8 +149,8 @@ describe("diagnostic log — port busy", () => {
       /no free port/i,
     );
 
-    const lines = await busyLines();
-    expect(lines.map((l) => l.fields.port)).toEqual([p0, p1]);
+    const busy = named(await lines((a) => named(a, BUSY).length >= 2), BUSY);
+    expect(busy.map((l) => l.fields.port)).toEqual([p0, p1]);
   });
 
   test("a free first port writes no busy line", async () => {
@@ -186,6 +161,6 @@ describe("diagnostic log — port busy", () => {
     openServers.push(server);
     await bindWithFallback(server, [port]);
 
-    expect(await busyLines()).toEqual([]);
+    expect(named(await lines(() => true), BUSY)).toEqual([]);
   });
 });

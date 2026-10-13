@@ -1,11 +1,10 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { createServer, type Server } from "node:http";
 import { mockPlugin } from "$/test-setup";
 import { setup, teardown, type McpTransportState } from "./setup";
 import type McpToolsPlugin from "$/main";
 import { PORT_RANGE } from "../constants";
-import { logger } from "$/shared/logger";
-import { createMemoryLogFs } from "$/shared/log/memoryLogFs";
+import { captureLogLines } from "$/shared/log/logCapture";
 
 /**
  * `mcpTransport.livePort` is the actually-bound port, written back after
@@ -166,31 +165,8 @@ describe("setup — sticky livePort", () => {
  * configured onto, so they are what is actually written, after redaction.
  */
 describe("diagnostic log — server lifecycle", () => {
-  const LOG_PATH = "/mem/diagnostic.log";
-  type Line = {
-    level: string;
-    message: string;
-    fields: Record<string, unknown>;
-  };
-  let memory = createMemoryLogFs();
-
-  beforeEach(async () => {
-    await logger.close();
-    memory = createMemoryLogFs();
-    logger.configure({ dir: "/mem", level: "DEBUG", fs: memory });
-  });
-  afterEach(async () => {
-    await logger.close();
-  });
-
-  async function named(message: string): Promise<Line[]> {
-    await logger.flush();
-    return (memory.files.get(LOG_PATH) ?? "")
-      .split("\n")
-      .filter((l) => l !== "")
-      .map((l) => JSON.parse(l) as Line)
-      .filter((l) => l.message === message);
-  }
+  const LISTENING = "MCP Connector HTTP server listening";
+  const { lines, has, named, written } = captureLogLines();
 
   test("start writes `listening` at INFO with the bound port, and never the bearer token", async () => {
     const { plugin } = makePlugin();
@@ -199,13 +175,11 @@ describe("diagnostic log — server lifecycle", () => {
     if (!result.success) return;
     active.push(result.state);
 
-    const lines = await named("MCP Connector HTTP server listening");
-    expect(lines).toHaveLength(1);
-    expect(lines[0]?.level).toBe("INFO");
-    expect(lines[0]?.fields.port).toBe(result.state.server.port);
-    expect(memory.files.get(LOG_PATH) ?? "").not.toContain(
-      result.state.bearerToken,
-    );
+    const listening = named(await lines((a) => has(a, LISTENING)), LISTENING);
+    expect(listening).toHaveLength(1);
+    expect(listening[0]?.level).toBe("INFO");
+    expect(listening[0]?.fields.port).toBe(result.state.server.port);
+    expect(written()).not.toContain(result.state.bearerToken);
   });
 
   test("teardown writes `stopped` at INFO with the port it released", async () => {
@@ -217,10 +191,11 @@ describe("diagnostic log — server lifecycle", () => {
 
     await teardown(result.state);
 
-    const lines = await named("MCP Connector HTTP server stopped");
-    expect(lines).toHaveLength(1);
-    expect(lines[0]?.level).toBe("INFO");
-    expect(lines[0]?.fields).toEqual({ port });
+    const STOPPED = "MCP Connector HTTP server stopped";
+    const stopped = named(await lines((a) => has(a, STOPPED)), STOPPED);
+    expect(stopped).toHaveLength(1);
+    expect(stopped[0]?.level).toBe("INFO");
+    expect(stopped[0]?.fields).toEqual({ port });
   });
 
   test("a start failure keeps its ERROR line", async () => {
@@ -236,11 +211,13 @@ describe("diagnostic log — server lifecycle", () => {
       const result = await setup(plugin);
       expect(result.success).toBe(false);
 
-      const lines = await named("MCP Connector failed to start HTTP server");
-      expect(lines).toHaveLength(1);
-      expect(lines[0]?.level).toBe("ERROR");
-      expect(String(lines[0]?.fields.error)).toContain("in use");
-      expect(await named("MCP Connector HTTP server listening")).toEqual([]);
+      const FAILED = "MCP Connector failed to start HTTP server";
+      const all = await lines((a) => has(a, FAILED));
+      const failed = named(all, FAILED);
+      expect(failed).toHaveLength(1);
+      expect(failed[0]?.level).toBe("ERROR");
+      expect(String(failed[0]?.fields.error)).toContain("in use");
+      expect(named(all, LISTENING)).toEqual([]);
     } finally {
       await new Promise<void>((resolve) => blocker.close(() => resolve()));
     }

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
   isIndexableFile,
   probeAndWipeStaleStores,
@@ -14,8 +14,7 @@ import {
 import { compilePolicy, EMPTY_POLICY } from "$/shared/pathPolicy";
 import { TFile } from "obsidian";
 import { mockPlugin } from "$/test-setup";
-import { logger } from "$/shared/logger";
-import { createMemoryLogFs } from "$/shared/log/memoryLogFs";
+import { captureLogLines } from "$/shared/log/logCapture";
 
 /** In-memory adapter tracking text + binary files and remove() calls. */
 function memAdapter() {
@@ -283,22 +282,8 @@ describe("purgeExcludedFromStores", () => {
  * from an in-memory file system the logger is configured onto.
  */
 describe("diagnostic log — semantic-search started", () => {
-  const LOG_PATH = "/mem/diagnostic.log";
-  type Line = {
-    level: string;
-    message: string;
-    fields: Record<string, unknown>;
-  };
-  let memory = createMemoryLogFs();
-
-  beforeEach(async () => {
-    await logger.close();
-    memory = createMemoryLogFs();
-    logger.configure({ dir: "/mem", level: "DEBUG", fs: memory });
-  });
-  afterEach(async () => {
-    await logger.close();
-  });
+  const STARTED = "semantic-search: started";
+  const { lines, has, named } = captureLogLines();
 
   /** A plugin whose vault adapter is in memory and whose layout never becomes ready. */
   function wiringPlugin() {
@@ -326,16 +311,11 @@ describe("diagnostic log — semantic-search started", () => {
     const state = await wireSemanticSearch(plugin);
     expect(state).toBeDefined();
     try {
-      await logger.flush();
-      const lines = (memory.files.get(LOG_PATH) ?? "")
-        .split("\n")
-        .filter((l) => l !== "")
-        .map((l) => JSON.parse(l) as Line)
-        .filter((l) => l.message === "semantic-search: started");
-      expect(lines).toHaveLength(1);
-      expect(lines[0]?.level).toBe("INFO");
-      expect(typeof lines[0]?.fields.provider).toBe("string");
-      expect((lines[0]?.fields.provider as string).length).toBeGreaterThan(0);
+      const started = named(await lines((a) => has(a, STARTED)), STARTED);
+      expect(started).toHaveLength(1);
+      expect(started[0]?.level).toBe("INFO");
+      expect(typeof started[0]?.fields.provider).toBe("string");
+      expect((started[0]?.fields.provider as string).length).toBeGreaterThan(0);
     } finally {
       await state?.teardown();
     }

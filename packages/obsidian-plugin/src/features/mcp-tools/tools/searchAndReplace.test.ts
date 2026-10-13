@@ -1,5 +1,5 @@
 // searchAndReplace.test.ts
-import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { describe, expect, test, beforeEach } from "bun:test";
 import {
   searchAndReplaceHandler,
   searchAndReplaceSchema,
@@ -11,8 +11,7 @@ import {
   setMockModifyFail,
 } from "$/test-setup";
 
-import { logger } from "$/shared/logger";
-import { createMemoryLogFs } from "$/shared/log/memoryLogFs";
+import { captureLogLines } from "$/shared/log/logCapture";
 
 beforeEach(() => resetMockVault());
 
@@ -168,23 +167,9 @@ describe("search_and_replace tool", () => {
  * file system the logger is configured onto.
  */
 describe("search_and_replace — invalid regex log line (R-05)", () => {
-  const LOG_PATH = "/mem/diagnostic.log";
   const PATTERN = "[unclosed-private-pattern";
-  type Line = {
-    level: string;
-    message: string;
-    fields: Record<string, unknown>;
-  };
-  let memory = createMemoryLogFs();
-
-  beforeEach(async () => {
-    await logger.close();
-    memory = createMemoryLogFs();
-    logger.configure({ dir: "/mem", level: "DEBUG", fs: memory });
-  });
-  afterEach(async () => {
-    await logger.close();
-  });
+  const INVALID_REGEX = "search_and_replace: invalid regex";
+  const { lines, has, named, written } = captureLogLines();
 
   test("the WARN line holds neither the pattern, nor the flags, nor the pattern text inside the RegExp error", async () => {
     const r = await searchAndReplaceHandler({
@@ -197,18 +182,16 @@ describe("search_and_replace — invalid regex log line (R-05)", () => {
       "invalid_regex",
     );
 
-    await logger.flush();
-    const text = memory.files.get(LOG_PATH) ?? "";
-    const lines = text
-      .split("\n")
-      .filter((l) => l !== "")
-      .map((l) => JSON.parse(l) as Line)
-      .filter((l) => l.message === "search_and_replace: invalid regex");
-    expect(lines).toHaveLength(1);
-    expect(lines[0]?.level).toBe("WARN");
-    expect("pattern" in (lines[0]?.fields ?? {})).toBe(false);
-    expect("flags" in (lines[0]?.fields ?? {})).toBe(false);
-    expect(typeof lines[0]?.fields.error).toBe("string");
+    const invalid = named(
+      await lines((a) => has(a, INVALID_REGEX)),
+      INVALID_REGEX,
+    );
+    const text = written();
+    expect(invalid).toHaveLength(1);
+    expect(invalid[0]?.level).toBe("WARN");
+    expect("pattern" in (invalid[0]?.fields ?? {})).toBe(false);
+    expect("flags" in (invalid[0]?.fields ?? {})).toBe(false);
+    expect(typeof invalid[0]?.fields.error).toBe("string");
     expect(text).not.toContain("unclosed-private-pattern");
     expect(text).not.toContain("gims");
   });
