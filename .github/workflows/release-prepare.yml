@@ -1,0 +1,115 @@
+name: Release prepare
+
+# Phase one of a release: bump the version, branch, commit, push the branch and
+# open the pull request. Publishes nothing. It runs `bun run version <part>`, so
+# every rule of that script (clean tree, main == origin/main, a CHANGELOG with a
+# `## [X.Y.Z]` section of its own, no tag or branch already in flight) applies
+# unchanged. The release PR is merged by hand; release-tag.yml takes over from
+# the merge. See ADR-0030.
+#
+# A GitHub App token does every write, not GITHUB_TOKEN. Events made with
+# GITHUB_TOKEN start no workflow, so the release PR would never get
+# `check-and-test` and `bridge-tests`, both required on main.
+
+on:
+  workflow_dispatch:
+    inputs:
+      part:
+        description: Which part of the version to bump
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
+      dry_run:
+        description: Print every mutating command instead of running it
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-prepare
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    # No reviewers on this environment. Its deployment-branch policy is limited
+    # to main, so a dispatch from any other branch fails before a step runs and
+    # the App secret is never reachable from a modified copy of this file.
+    environment: release-prepare
+    steps:
+      # The same refusal as plain text, for a repository whose environment has
+      # no branch policy yet. `ref_name` goes through `env`, never spliced into
+      # the script.
+      - name: Refuse a dispatch from any ref but main
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [[ "$REF_NAME" != "main" ]]; then
+            echo "::error::Refusing to prepare a release from '$REF_NAME'. Dispatch this workflow from main."
+            exit 1
+          fi
+
+      - name: Create the App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      # Pinned, unlike ci.yml: a release command must not change behaviour
+      # between two runs with no commit in between. Matches release.yml.
+      #
+      # No `bun install`: scripts/version.ts imports only `bun` and `fs`, and an
+      # install could migrate bun.lock in place and trip the script's own
+      # clean-tree refusal.
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      # main-strict sets require_extra_approval_for_unattributed_changes. A
+      # commit whose email does not resolve to a GitHub account then demands an
+      # extra approving review, and the error never mentions the identity. The
+      # noreply address needs the bot USER id, not the App id.
+      - name: Set the git identity to the App's bot
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          bot_id=$(gh api "/users/${APP_SLUG}%5Bbot%5D" --jq .id)
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
+
+      - name: Check the token can reach the repository
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: gh api "repos/$GITHUB_REPOSITORY" --jq .permissions
+
+      # `gh` does not read the credential checkout persisted for git, so it
+      # needs GH_TOKEN of its own for `gh pr create`. `part` goes through `env`
+      # like every other expression. DRY_RUN is empty unless the box is ticked:
+      # the script reads it with envFlag, but an empty value is the safest
+      # spelling of "off".
+      - name: Prepare the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PART: ${{ inputs.part }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+        run: bun run version "$PART"
