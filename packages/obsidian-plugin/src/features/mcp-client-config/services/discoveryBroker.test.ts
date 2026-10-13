@@ -14,8 +14,7 @@ import {
 } from "$/features/mcp-transport/services/tokenStore";
 import type { McpTransportState } from "$/features/mcp-transport/services/setup";
 import { SettingsStore } from "$/shared/settingsStore";
-import { logger } from "$/shared/logger";
-import { createMemoryLogFs } from "$/shared/log/memoryLogFs";
+import { captureLogLines } from "$/shared/log/logCapture";
 import { BROKER_NAME } from "./brokerServer";
 import {
   codexConfigSnippet,
@@ -1805,22 +1804,8 @@ describe("route lifecycle", () => {
  * written, after redaction.
  */
 describe("diagnostic log — broker route registered", () => {
-  const LOG_PATH = "/mem/diagnostic.log";
-  type Line = {
-    level: string;
-    message: string;
-    fields: Record<string, unknown>;
-  };
-  let memory = createMemoryLogFs();
-
-  beforeEach(async () => {
-    await logger.close();
-    memory = createMemoryLogFs();
-    logger.configure({ dir: "/mem", level: "DEBUG", fs: memory });
-  });
-  afterEach(async () => {
-    await logger.close();
-  });
+  const REGISTERED = "Broker route registered";
+  const { lines, has, named, written } = captureLogLines();
 
   test("a successful registration writes `Broker route registered` {brokerPort, transportPort} and neither the route id nor the access token", async () => {
     const plugin = fakePlugin(withTokens("a"));
@@ -1830,16 +1815,14 @@ describe("diagnostic log — broker route registered", () => {
     runtimes.push(runtime);
     expect(runtime.status.state).toBe("connected");
 
-    await logger.flush();
-    const text = memory.files.get(LOG_PATH) ?? "";
-    const lines = text
-      .split("\n")
-      .filter((l) => l !== "")
-      .map((l) => JSON.parse(l) as Line)
-      .filter((l) => l.message === "Broker route registered");
-    expect(lines).toHaveLength(1);
-    expect(lines[0]?.level).toBe("INFO");
-    expect(lines[0]?.fields).toEqual({
+    const registered = named(
+      await lines((a) => has(a, REGISTERED)),
+      REGISTERED,
+    );
+    const text = written();
+    expect(registered).toHaveLength(1);
+    expect(registered[0]?.level).toBe("INFO");
+    expect(registered[0]?.fields).toEqual({
       brokerPort: 27200,
       transportPort: 27201,
     });
