@@ -174,7 +174,12 @@ by moving the scrub into the sink, where the values are unknown.
 - **Every request.** `handleRequest` emits `"mcp request"` after `recordEra`, never before it. Its
   fields are `method`, `era`, `requestedVersion`, `tokenId`, `status` and `durationMs`. The level is
   DEBUG, or INFO when the HTTP status is 400 or higher. That covers `tools/list`, `server/discover`
-  and `initialize` at DEBUG, and every error at INFO. `requestedVersion` is the
+  and `initialize` at DEBUG, and every HTTP error at INFO. The level reads the status alone and
+  `logRequest` never inspects the body, so a JSON-RPC error carried in a 200 response (for example
+  `-32602`) stays at DEBUG and leaves no line at the default INFO. A failed tool call is not affected:
+  `"mcp tool call"` reports it at INFO with `outcome: tool_error`. Raising protocol-level errors to INFO
+  would need the error raised where it is built, and is left open until a report needs it.
+  `requestedVersion` is the
   `mcp-protocol-version` header, else the `_meta[PROTOCOL_VERSION_META_KEY]` envelope claim, else
   `initialize`'s `params.protocolVersion`, truncated to 64 characters.
 - **Version rejections.** A rejected protocol version emits `"mcp protocol version rejected"` at WARN

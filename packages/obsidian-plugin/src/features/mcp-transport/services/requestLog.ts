@@ -110,7 +110,11 @@ export function toolCallOutcome(
   return result.isError === true ? "tool_error" : "ok";
 }
 
-/** DEBUG below 400, INFO from 400 up: every error is visible at the default. */
+/**
+ * DEBUG below 400, INFO from 400 up: every HTTP error is visible at the
+ * default. A JSON-RPC error carried in a 200 response is not: this level
+ * reads the status alone and the body is never inspected.
+ */
 export function requestLogLevel(
   status: number,
 ): Extract<LogLevel, "DEBUG" | "INFO"> {
