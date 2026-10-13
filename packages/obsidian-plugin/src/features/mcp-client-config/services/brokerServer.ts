@@ -521,6 +521,11 @@ function forward(
     {
       host: BIND_HOST,
       port,
+      // The global agent (keep-alive since Node 19) pools the socket of an
+      // answer that says `Connection: keep-alive`, as the SSE ones do, even
+      // though this request asked for `close`. The next forward would reuse
+      // it and the vault parser would reject it with an empty 400.
+      agent: false,
       path: `${MCP_PATH_PREFIX}${query}`,
       method: req.method,
       headers,
