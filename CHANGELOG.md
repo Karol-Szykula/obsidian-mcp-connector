@@ -5,6 +5,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), version
 
 ## [Unreleased]
 
+## [3.0.3] — 2026-10-15
+
 ### Added
 
 - **A diagnostic log you can attach to an issue.** The plugin now writes `diagnostic.log` in its own folder, in the shipped build and in development alike: MCP requests with their protocol era and version, rejected protocol versions, server start and stop, a busy port, the shared broker route, semantic search start-up, and tool errors with their stack. Each line is one JSON object. The file rotates at 5 MB and keeps 5 files, about 25 MB. Bearer tokens, tool argument values, note content and absolute paths are removed where known: every line is redacted before it is written, and a tool call records its argument names only. Some failure lines name a vault-relative note path, so review the log before posting it. If the file cannot be written, requests and plugin load carry on and one console warning is emitted per failure episode (ADR-0029)
@@ -13,6 +15,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), version
 ### Changed
 
 - **The plugin no longer writes to the developer console.** Its messages go to the diagnostic log instead, apart from a single warning when the log cannot be written. Development builds no longer write a log under the OS log directory either
+
+### Fixed
+
+- **A request through the shared broker no longer fails with an empty `400` after an earlier streamed answer.** The broker forwarded each request with Node's global HTTP agent, which keeps sockets alive. The vault's streamed (SSE) answers carry `Connection: keep-alive`, so their socket was pooled although the forwarded request said `close`, and the next forward reused it and was rejected by the vault's parser. Every forward now opens its own connection (#600)
 
 ## [3.0.2] — 2026-10-10
 
