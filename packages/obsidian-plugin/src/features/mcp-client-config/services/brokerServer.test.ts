@@ -395,6 +395,61 @@ test("one stable route forwards the client bearer unchanged to the registered po
   await waitForStatus(brokerPort, route, routeCredential, 404);
 });
 
+test("forwarding never uses a pooled agent, so a keep-alive SSE answer leaves no socket to reuse", async () => {
+  const sockets = new Set<unknown>();
+  const target = http.createServer((req, res) => {
+    sockets.add(req.socket);
+    req.resume();
+    // What the SDK transport sends: an SSE stream that claims keep-alive
+    res.writeHead(200, {
+      "content-type": "text/event-stream",
+      connection: "keep-alive",
+    });
+    res.end("event: message\ndata: {}\n\n");
+  });
+  servers.push(target);
+  const targetPort = await listen(target);
+  const dataPath = vaultFile();
+  await writeVault(dataPath, { livePort: targetPort });
+  const brokerPort = await startBroker();
+  await registerRoute(
+    brokerPort,
+    routeCredential,
+    "lease",
+    routeId,
+    dataPath,
+    dataPath,
+    targetPort,
+  );
+
+  const requestSpy = spyOn(http, "request");
+  try {
+    const route = `/v1/${routeId}/mcp`;
+    for (const id of [1, 2]) {
+      const response = await request(brokerPort, {
+        path: route,
+        token: "client-token",
+        body: `{"jsonrpc":"2.0","id":${id},"method":"tools/list"}`,
+      });
+      expect(response.status).toBe(200);
+    }
+    // Bun's http client does not pool, so assert the option that Node needs
+    const forwarded = requestSpy.mock.calls.filter(
+      ([options]) =>
+        typeof options === "object" &&
+        "port" in options &&
+        Number(options.port) === targetPort,
+    );
+    expect(forwarded).toHaveLength(2);
+    for (const [options] of forwarded) {
+      expect(options).toMatchObject({ agent: false });
+    }
+    expect(sockets.size).toBe(2);
+  } finally {
+    requestSpy.mockRestore();
+  }
+});
+
 test.each([
   ["the broker port", 27200],
   ["below 1024", 80],
