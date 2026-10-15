@@ -1,6 +1,6 @@
 # ADR-0030: Cut a release from GitHub Actions, with an approval gate
 
-**Status:** Proposed
+**Status:** Accepted (proven on the 3.0.3 cut, 2026-10-15)
 **Date:** 2026-10-13
 **Relates to:** `scripts/version.ts` (the two-phase release script, PR #464 and #479), `.github/workflows/release.yml` (build, attest, publish on a version tag)
 **Supersedes:** nothing

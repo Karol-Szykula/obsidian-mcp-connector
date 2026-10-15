@@ -477,7 +477,8 @@ async function prepare(semverPart: string): Promise<void> {
       "--body",
       `Version bump: \`package.json\`, \`manifest.json\`, \`versions.json\`, ` +
         `plus \`CHANGELOG.md\` if the release notes were moved in the same step.\n\n` +
-        `Merge this once CI is green, pull \`main\`, then run \`bun run version:tag\` to tag and publish. ` +
+        `Merge this once CI is green. The **Release tag** workflow then waits for approval in the \`release\` environment, and approving it tags and publishes. ` +
+        `Without Actions, pull \`main\` and run \`bun run version:tag\` instead. ` +
         `Either merge method is fine — the tag is created after the merge, so it points at whatever \`main\` has.`,
     ]);
   } else {
@@ -490,8 +491,8 @@ async function prepare(semverPart: string): Promise<void> {
   console.log(
     `\n${DRY_RUN ? "[dry run] " : ""}Prepared. Nothing is published yet.\n` +
       `  1. wait for CI, then merge the PR (squash or merge commit, either is correct)\n` +
-      `  2. git checkout main && git pull --ff-only\n` +
-      `  3. bun run version:tag        ← tags ${version} and pushes it; release.yml runs on that\n`,
+      `  2. approve the Release tag run in Actions: it tags ${version} and release.yml runs on that\n` +
+      `     without Actions: git checkout main && git pull --ff-only && bun run version:tag\n`,
   );
 }
 
