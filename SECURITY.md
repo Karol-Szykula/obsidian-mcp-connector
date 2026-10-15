@@ -151,7 +151,13 @@ For 0.3.x users, the binary distribution is secured by:
   ```
   This confirms the binary was built from the exact commit and workflow recorded in the attestation, not tampered with after release.
 
-The 0.4.x release pipeline (per `release.yml` split, PR #62) only emits attestations for tags whose name starts with `0.3.` — the 0.4.x line ships plugin-only assets (`main.js`, `manifest.json`, `obsidian-plugin-X.zip`) and does not currently produce SLSA attestation. Verification for 0.4.x relies on the BRAT plugin or community store identifying the release by its tag commit SHA, plus the install path being the user's own vault directory.
+The current release pipeline (`release.yml`) attests `main.js` with `actions/attest-build-provenance@v4` for every version tag (verified on 3.0.3). Verify a downloaded `main.js` with:
+
+```bash
+gh attestation verify main.js --repo istefox/obsidian-mcp-connector
+```
+
+The command exits 0 when the file matches the attestation recorded for that release. Only `main.js` is attested, not `manifest.json`. A version tag is created only by the **Release tag** workflow, after a maintainer approves the `release` environment, because a tag ruleset limits tag creation to the release GitHub App (ADR-0030).
 
 ## Supported Versions
 

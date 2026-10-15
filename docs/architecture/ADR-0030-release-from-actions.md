@@ -183,11 +183,14 @@ be a value, not an exit code to string-match.
 
 ### Negative
 
-- The approval is advisory until tag creation is restricted: anyone with write access can still
-  run `git push origin 3.1.0` from a laptop and publish. A ruleset on `refs/tags/*` with
-  `creation`, `update` and `non_fast_forward`, and the App as the only bypass actor, would close
-  it. It costs a toggle for break-glass recovery, and it blocks hand-cut prereleases, because
-  `bump()` cannot bump from a prerelease version.
+- Tag creation is restricted, so the approval is the only way to a tag. The ruleset
+  `release-tags-via-actions` (id 25172909, applied 2026-10-15) covers `refs/tags/*` with `creation`,
+  `update` and `non_fast_forward`, and the App is its only bypass actor. `deletion` stays allowed so a
+  tag from a failed publish can be cleaned up. A direct `POST` of a tag with the owner's token was
+  refused with 422. That the App's own tag push passes was not tested when the ruleset went on;
+  the first release after it is the test. The costs: the terminal fallback `bun run version:tag` no
+  longer works, break-glass recovery means switching the ruleset off in the repository settings, and
+  hand-cut prereleases are blocked, because `bump()` cannot bump from a prerelease version.
 - A release PR now needs a changelog PR before it: rename `## [Unreleased]` to
   `## [X.Y.Z] - date`, re-add an empty `## [Unreleased]` (without it the check reports a missing
   heading), merge, and dispatch before any other PR adds notes.
