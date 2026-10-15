@@ -16,7 +16,9 @@ import {
   blockingStatusPaths,
   bump,
   checkChangelogReady,
+  envFlag,
   releaseBranchName,
+  tagVerdict,
   verifyCommittedVersion,
 } from "./version";
 
@@ -243,5 +245,109 @@ describe("blockingStatusPaths", () => {
     expect(blockingStatusPaths(' M "CHANGELOG.md"', ["CHANGELOG.md"])).toEqual(
       [],
     );
+  });
+});
+
+describe("envFlag", () => {
+  test("absent, empty, 0, false and no are off, in any case and padding", () => {
+    for (const v of [undefined, "", "0", "false", "False", "NO", " false "]) {
+      expect(envFlag(v)).toBe(false);
+    }
+  });
+
+  test("any other value is on", () => {
+    for (const v of ["1", "true", "TRUE", "yes", "anything"]) {
+      expect(envFlag(v)).toBe(true);
+    }
+  });
+
+  test("the string a workflow boolean renders to is off, which !! would get wrong", () => {
+    // `dry_run: false` reaches `env:` as "false". `!!"false"` is true, and
+    // that turned a real release into a silent dry run.
+    const rendered = String(false);
+    expect(!!rendered).toBe(true);
+    expect(envFlag(rendered)).toBe(false);
+  });
+});
+
+describe("tagVerdict", () => {
+  const changelog = (version: string, left = "") =>
+    [
+      "# Changelog",
+      "",
+      "## [Unreleased]",
+      left,
+      `## [${version}] — 2026-10-13`,
+      "",
+      "- Something.",
+      "",
+    ].join("\n");
+
+  const tree = (version: string, tagExists: boolean, left = "") => ({
+    pkg: JSON.stringify({ name: "x", version }),
+    manifest: JSON.stringify({ id: "x", version, minAppVersion: "1.7.2" }),
+    versions: JSON.stringify({ "1.0.1": "1.7.2", [version]: "1.7.2" }),
+    changelog: changelog(version, left),
+    tagExists,
+  });
+
+  test("a version that already has a tag is nothing, the ordinary push to main", () => {
+    expect(tagVerdict(tree("3.0.2", true))).toEqual({
+      kind: "nothing",
+      version: "3.0.2",
+    });
+  });
+
+  test("an untagged version whose files and changelog agree is ready", () => {
+    expect(tagVerdict(tree("3.0.3", false))).toEqual({
+      kind: "ready",
+      version: "3.0.3",
+    });
+  });
+
+  test("an untagged version with notes left under Unreleased is inconsistent, not nothing", () => {
+    // The #476 shape one layer up: a release PR merges, then an ordinary PR
+    // adds notes under Unreleased. Folding this into "nothing" would leave a
+    // release that never happens and a run that stays green.
+    const v = tagVerdict(tree("3.0.3", false, "\n- A later note.\n"));
+    expect(v.kind).toBe("inconsistent");
+    if (v.kind !== "inconsistent") return;
+    expect(v.fileProblems).toEqual([]);
+    expect(v.changelogProblems[0]).toMatch(/still has content under/);
+  });
+
+  test("an untagged version whose three files disagree is inconsistent", () => {
+    const t = tree("3.0.3", false);
+    t.manifest = JSON.stringify({ id: "x", version: "3.0.2" });
+    const v = tagVerdict(t);
+    expect(v.kind).toBe("inconsistent");
+    if (v.kind !== "inconsistent") return;
+    expect(v.version).toBe("3.0.3");
+    expect(v.fileProblems[0]).toMatch(/manifest\.json at HEAD says "3\.0\.2"/);
+  });
+
+  test("an unparseable package.json is inconsistent with no version", () => {
+    const t = tree("3.0.3", false);
+    t.pkg = "{ not json";
+    const v = tagVerdict(t);
+    expect(v.kind).toBe("inconsistent");
+    if (v.kind !== "inconsistent") return;
+    expect(v.version).toBeNull();
+    expect(v.fileProblems[0]).toMatch(/package\.json at HEAD does not parse/);
+  });
+
+  test("a package.json without a version is inconsistent, even when a tag lookup was made", () => {
+    const t = tree("3.0.3", true);
+    t.pkg = JSON.stringify({ name: "x" });
+    const v = tagVerdict(t);
+    expect(v.kind).toBe("inconsistent");
+    if (v.kind !== "inconsistent") return;
+    expect(v.version).toBeNull();
+  });
+
+  test("a tagged version is nothing even if its files have since drifted", () => {
+    const t = tree("3.0.2", true);
+    t.manifest = "{ not json";
+    expect(tagVerdict(t).kind).toBe("nothing");
   });
 });

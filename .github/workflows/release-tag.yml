@@ -1,0 +1,145 @@
+name: Release tag
+
+# Phase two of a release: tag main, which is what release.yml publishes on.
+#
+# Every push to main runs the `detect` job, which asks `bun run version:check`
+# whether HEAD is a release still waiting for its tag. Almost always the answer
+# is `nothing` and the run ends there, without an approval request. When it is
+# `ready`, the `tag` job waits on the `release` environment for a reviewer, then
+# runs `bun run version:tag`. An untagged version whose files or changelog
+# disagree makes `detect` fail red: a half-made release must not be silent.
+# See ADR-0030.
+#
+# Why a push trigger and not `workflow_run` on CI: ci.yml cancels in-progress
+# runs per ref, so a doc commit landing right after the release merge would
+# cancel its CI, the conclusion would be `cancelled`, and the tag would never
+# happen with nothing red anywhere.
+#
+# Re-running the `tag` job after it succeeded asks for approval again and then
+# fails at the script's `Tag X already exists on origin` check. That red run is
+# the real idempotence guard. Leave it.
+
+on:
+  push:
+    branches:
+      - main
+  # The recovery path: tag after main moved, or after a detection that missed.
+  # It runs the same jobs and the same environment approval.
+  workflow_dispatch:
+    inputs:
+      expected_version:
+        description: Optional. Refuse unless the detected version is exactly this
+        type: string
+        default: ""
+
+# A newer push supersedes an older run still waiting for approval, instead of
+# queueing behind it. Cancelling mid-push of the tag is harmless: if the push
+# landed, release.yml still runs; if not, nothing happened.
+concurrency:
+  group: release-tag
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      verdict: ${{ steps.check.outputs.verdict }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - name: Refuse a dispatch from any ref but main
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [[ "$REF_NAME" != "main" ]]; then
+            echo "::error::Refusing to look for a release on '$REF_NAME'. Dispatch this workflow from main."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Is HEAD a release still waiting for its tag?
+        id: check
+        run: bun run version:check
+
+      # What the reviewer is about to approve, so the click is informed. All
+      # values come from git, none is spliced from an expression.
+      - name: Summarise the release for the approver
+        if: steps.check.outputs.verdict == 'ready'
+        shell: bash
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          prev=$(git describe --tags --abbrev=0 --match '[0-9]*.[0-9]*.[0-9]*' HEAD 2>/dev/null || true)
+          {
+            echo "### Release $VERSION is ready to tag"
+            echo
+            echo "Commit \`$(git rev-parse --short HEAD)\`: $(git log -1 --pretty=%s)"
+            echo
+            if [[ -n "$prev" ]]; then
+              echo "Changes since \`$prev\`:"
+              echo
+              git log "$prev..HEAD" --pretty='- %h %s'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  tag:
+    needs: detect
+    if: >-
+      needs.detect.outputs.verdict == 'ready' &&
+      (inputs.expected_version == '' || inputs.expected_version == needs.detect.outputs.version)
+    runs-on: ubuntu-latest
+    # Required reviewers live on this environment. "Prevent self-review" stays
+    # off: the reviewer is also the person who merged the release PR.
+    environment: release
+    steps:
+      # Minted here, after the approval, and never passed between jobs: a job
+      # output is not masked in the job that reads it.
+      - name: Create the App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      # No `ref:` override, on purpose. On a push the default checkout is the
+      # event commit, and the script's assertReleasableMain then fetches
+      # origin/main and refuses if main moved while this job waited for
+      # approval. With `ref: main` it would silently tag whatever main had
+      # grown into, and a commit that was never in the release PR would ship.
+      # When it refuses, re-run at the new head. Do not force.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Set the git identity to the App's bot
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          bot_id=$(gh api "/users/${APP_SLUG}%5Bbot%5D" --jq .id)
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
+
+      # The point of no return. The tag is pushed with the App token so that
+      # release.yml, which triggers on tag pushes, actually runs.
+      - name: Tag and push
+        run: bun run version:tag

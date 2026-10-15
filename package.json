@@ -24,6 +24,7 @@
     "dev": "bun --filter '*' dev",
     "version": "bun scripts/version.ts",
     "version:tag": "bun scripts/version.ts --tag",
+    "version:check": "bun scripts/version.ts --check",
     "release": "bun --filter '*' release",
     "zip": "bun --filter '*' zip"
   },
