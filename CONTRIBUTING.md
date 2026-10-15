@@ -117,17 +117,47 @@ packages/
 ## Release Process (Maintainers Only)
 
 ### Creating Releases
-1. **Version bump**: `bun run version [patch|minor|major]`
-   - Automatically updates `package.json`, `manifest.json`, and `versions.json`
-   - Creates git commit and tag
-   - Pushes to GitHub
 
-2. **Automated build**: GitHub Actions (`release.yml`, tag-triggered) handles:
+A release is cut in two phases with a human gate between them. `main` refuses a direct push, so
+neither phase pushes it: the first opens a pull request, the second tags the merged commit.
+See [ADR-0030](docs/architecture/ADR-0030-release-from-actions.md) for why.
+
+1. **Write the release notes.** In an ordinary PR, rename `## [Unreleased]` in `CHANGELOG.md` to
+   `## [X.Y.Z] - date` and add an empty `## [Unreleased]` above it. Without the empty heading the
+   release check reports a missing one. Merge it, then go to step 2 before any other PR adds notes.
+
+2. **Prepare** (Actions tab, workflow **Release prepare**): pick `part` (patch, minor, major).
+   Tick `dry_run` first on a change to the release tooling. It bumps `package.json`,
+   `manifest.json` and `versions.json`, commits as the App's bot, pushes `chore/release-X.Y.Z`
+   and opens the PR. Nothing is published. It refuses a changelog that is not ready, a tag that
+   already exists, or a release branch already in flight.
+
+3. **Merge the release PR** once `check-and-test` and `bridge-tests` pass. Squash or a merge
+   commit are both fine: the tag is created afterwards and points at whatever `main` has.
+
+4. **Approve the tag** (workflow **Release tag**). Every push to `main` runs it. It asks for your
+   approval only when HEAD is an untagged release, and the job summary lists the version, the
+   commit and the changes since the last tag. **Approving is the point of no return.** If `main`
+   moved while it waited, the job refuses: re-run it at the new head instead of forcing. A red
+   `detect` job means an untagged version whose files or changelog disagree; fix the cause and
+   push, or dispatch the workflow again.
+
+5. **Automated build**: pushing the tag starts `release.yml`, which handles:
    - Plugin bundle build (`bun.config.ts` → `main.js`) — no binary
    - GitHub build-provenance attestation for `main.js`
    - Release artifact upload (`main.js` + `manifest.json`)
 
-3. **Release notes**: GitHub automatically generates release notes from PRs
+6. **Release notes**: GitHub appends generated notes from the merged PRs to the release.
+
+**Fallback, from a terminal**, when Actions is unavailable: `bun run version <part>`, merge the PR,
+`git checkout main && git pull --ff-only`, then `bun run version:tag`. `DRY_RUN=1` on either
+prints every mutating command and still runs every read-only check. `bun run version:check` says
+whether HEAD is a release still waiting for its tag.
+
+**One-time setup** (repository admin): a GitHub App with Contents and Pull requests write and
+Metadata read, installed on this repository only; the secret `RELEASE_APP_PRIVATE_KEY` and the
+variable `RELEASE_APP_CLIENT_ID`; environments `release-prepare` (no reviewers) and `release`
+(required reviewer, "Prevent self-review" off), both limited to the `main` branch.
 
 ### Maintainer Responsibilities
 - **Code review**: Review PRs for quality, security, and architecture compliance

@@ -7,6 +7,10 @@
  *   bun run version:tag                   publishes: tags `main` and pushes
  *                                         the tag, which is what release.yml
  *                                         triggers on. Point of no return.
+ *   bun run version:check                 reads only: says whether HEAD is a
+ *                                         release still waiting for its tag.
+ *                                         release-tag.yml runs it on every push
+ *                                         to main.
  *
  * It used to be one command ending in `git push -u origin main`, and `main`
  * refuses a direct push: a ruleset requires a pull request and classic branch
@@ -32,10 +36,25 @@
  * without cutting a real release.
  */
 import { $ } from "bun";
-import { readFileSync, writeFileSync } from "fs";
+import { appendFileSync, readFileSync, writeFileSync } from "fs";
 
-const DRY_RUN = !!process.env.DRY_RUN;
-const FORCE = !!process.env.FORCE;
+/**
+ * Whether an environment variable asks for a flag. Absent, empty, `0`,
+ * `false` and `no` mean off.
+ *
+ * This replaces `!!process.env.X`, which is true for any non-empty string,
+ * `"false"` included. A workflow boolean rendered into `env:` arrives as that
+ * string, so under the old test every real release dispatched with
+ * `dry_run: false` would have run as a dry run, printed `would run: ...` and
+ * exited 0 with nothing published.
+ */
+export function envFlag(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  return !["", "0", "false", "no"].includes(value.trim().toLowerCase());
+}
+
+const DRY_RUN = envFlag(process.env.DRY_RUN);
+const FORCE = envFlag(process.env.FORCE);
 
 const PKG_PATH = "./package.json";
 const MANIFEST_PATH = "./manifest.json";
@@ -200,6 +219,73 @@ export function checkChangelogReady(text: string, version: string): string[] {
   return problems;
 }
 
+/** What `main`'s committed tree says about tagging a release. */
+export type TagVerdict =
+  | { kind: "nothing"; version: string }
+  | { kind: "ready"; version: string }
+  | {
+      kind: "inconsistent";
+      version: string | null;
+      fileProblems: string[];
+      changelogProblems: string[];
+    };
+
+/**
+ * Whether the committed tree is a release that still needs its tag, as one of
+ * three answers rather than a boolean.
+ *
+ * `nothing` is the ordinary case: the version at HEAD already has a tag, so
+ * this commit is not a release cut. `ready` is a release awaiting its tag.
+ * `inconsistent` is the one that must never be swallowed: an untagged version
+ * whose three files disagree, or whose changelog is not ready. A boolean
+ * "should tag" would fold it into "no", and the failure would be silent in
+ * exactly the way #476 exists to prevent: a release PR merges, an ordinary PR
+ * then adds notes under `## [Unreleased]`, and nothing happens and nobody is
+ * told. The `--check` mode turns this verdict into an exit code, and the tag
+ * phase consumes it too, so the detection and the tagging cannot drift apart.
+ *
+ * Pure on purpose: every input is text, so the verdict is unit-testable
+ * without a repository.
+ */
+export function tagVerdict(input: {
+  pkg: string;
+  manifest: string;
+  versions: string;
+  changelog: string;
+  tagExists: boolean;
+}): TagVerdict {
+  let version: unknown;
+  try {
+    version = JSON.parse(input.pkg).version;
+  } catch (err) {
+    return {
+      kind: "inconsistent",
+      version: null,
+      fileProblems: [
+        `package.json at HEAD does not parse as JSON: ${String(err)}`,
+      ],
+      changelogProblems: [],
+    };
+  }
+  if (typeof version !== "string" || version === "") {
+    return {
+      kind: "inconsistent",
+      version: null,
+      fileProblems: ["package.json at HEAD has no version string."],
+      changelogProblems: [],
+    };
+  }
+
+  if (input.tagExists) return { kind: "nothing", version };
+
+  const fileProblems = verifyCommittedVersion(input, version);
+  const changelogProblems = checkChangelogReady(input.changelog, version);
+  if (fileProblems.length > 0 || changelogProblems.length > 0) {
+    return { kind: "inconsistent", version, fileProblems, changelogProblems };
+  }
+  return { kind: "ready", version };
+}
+
 /**
  * The uncommitted paths that should block a release, given the ones this phase
  * tolerates.
@@ -300,6 +386,18 @@ async function prepare(semverPart: string): Promise<void> {
   if (existing) {
     die(`Tag ${version} already exists locally. Nothing to prepare.`);
   }
+  // The remote counterparts. Without them a second run for a release that is
+  // already in flight writes three files and makes a commit, and only then
+  // fails at the push with a non-fast-forward that does not say why.
+  if (await gitText(["git", "ls-remote", "--tags", "origin", version])) {
+    die(`Tag ${version} already exists on origin. Nothing to prepare.`);
+  }
+  if (await gitText(["git", "ls-remote", "--heads", "origin", branch])) {
+    die(
+      `Branch ${branch} already exists on origin: release ${version} is already in flight.\n` +
+        `  Merge or close its pull request first.`,
+    );
+  }
 
   // Read-only, so it runs for real under DRY_RUN like every other preflight. A
   // dry run that skipped it would prove nothing about the real one.
@@ -397,6 +495,72 @@ async function prepare(semverPart: string): Promise<void> {
   );
 }
 
+/** The committed texts the tag verdict is computed from, read at HEAD. */
+async function readCommittedTree(): Promise<{
+  pkg: string;
+  manifest: string;
+  versions: string;
+  changelog: string;
+}> {
+  return {
+    pkg: await gitText(["git", "show", "HEAD:package.json"]),
+    manifest: await gitText(["git", "show", "HEAD:manifest.json"]),
+    versions: await gitText(["git", "show", "HEAD:versions.json"]),
+    changelog: await gitText(["git", "show", "HEAD:CHANGELOG.md"]),
+  };
+}
+
+/**
+ * `--check`: says whether HEAD is a release that still needs its tag, and
+ * changes nothing. A workflow runs it on every push to `main`.
+ *
+ * It skips `assertReleasableMain` on purpose. Branch, clean tree and
+ * `origin/main` are preconditions for TAGGING, and the tag phase runs them
+ * itself. Detection only has to answer "is there a release to cut at this
+ * commit", and answering it from a checkout that happens to be detached or
+ * shallow must not turn into a failure.
+ *
+ * Exit 0 for `nothing` and `ready`, exit 1 for `inconsistent`: a red run is the
+ * only way a half-made release is noticed.
+ */
+async function checkRelease(): Promise<void> {
+  const tree = await readCommittedTree();
+  let tagExists = false;
+  try {
+    const version = JSON.parse(tree.pkg).version;
+    if (typeof version === "string" && version !== "") {
+      tagExists = !!(await gitText([
+        "git",
+        "ls-remote",
+        "--tags",
+        "origin",
+        version,
+      ]));
+    }
+  } catch {
+    // An unparseable package.json is reported by the verdict itself.
+  }
+
+  const verdict = tagVerdict({ ...tree, tagExists });
+  console.log(
+    `verdict: ${verdict.kind}${verdict.version ? ` ${verdict.version}` : ""}`,
+  );
+  if (verdict.kind === "inconsistent") {
+    for (const p of [...verdict.fileProblems, ...verdict.changelogProblems]) {
+      console.error(`  - ${p}`);
+    }
+  }
+
+  const out = process.env.GITHUB_OUTPUT;
+  if (out) {
+    appendFileSync(
+      out,
+      `verdict=${verdict.kind}\nversion=${verdict.version ?? ""}\n`,
+    );
+  }
+  if (verdict.kind === "inconsistent") process.exit(1);
+}
+
 async function tagAndPublish(): Promise<void> {
   await assertReleasableMain();
 
@@ -406,10 +570,10 @@ async function tagAndPublish(): Promise<void> {
   // file. What this pair of steps genuinely buys is the agreement of the three
   // files with each other at the exact commit about to be tagged, which a
   // partial merge or a hand-edit can break.
-  const committedPkg = await gitText(["git", "show", "HEAD:package.json"]);
+  const tree = await readCommittedTree();
   let version: string;
   try {
-    version = JSON.parse(committedPkg).version;
+    version = JSON.parse(tree.pkg).version;
   } catch (err) {
     die(`package.json at HEAD does not parse as JSON: ${String(err)}`);
   }
@@ -417,27 +581,39 @@ async function tagAndPublish(): Promise<void> {
     die("package.json at HEAD has no version string. Nothing to tag.");
   }
 
-  const problems = verifyCommittedVersion(
-    {
-      pkg: committedPkg,
-      manifest: await gitText(["git", "show", "HEAD:manifest.json"]),
-      versions: await gitText(["git", "show", "HEAD:versions.json"]),
-    },
+  const localTag = await gitText(["git", "tag", "-l", version]);
+  const remoteTag = await gitText([
+    "git",
+    "ls-remote",
+    "--tags",
+    "origin",
     version,
-  );
-  if (problems.length > 0) {
+  ]);
+  const verdict = tagVerdict({ ...tree, tagExists: !!localTag || !!remoteTag });
+
+  if (verdict.kind === "nothing") {
     die(
-      `main's committed tree does not agree on ${version}:\n` +
-        problems.map((p) => `  - ${p}`).join("\n") +
-        `\n  A partial merge or a hand-edit leaves exactly this shape.`,
+      localTag
+        ? `Tag ${version} already exists locally.`
+        : `Tag ${version} already exists on origin. A release cannot be re-cut.`,
     );
   }
-
-  if (await gitText(["git", "tag", "-l", version])) {
-    die(`Tag ${version} already exists locally.`);
-  }
-  if (await gitText(["git", "ls-remote", "--tags", "origin", version])) {
-    die(`Tag ${version} already exists on origin. A release cannot be re-cut.`);
+  if (verdict.kind === "inconsistent") {
+    if (verdict.fileProblems.length > 0) {
+      die(
+        `main's committed tree does not agree on ${version}:\n` +
+          verdict.fileProblems.map((p) => `  - ${p}`).join("\n") +
+          `\n  A partial merge or a hand-edit leaves exactly this shape.`,
+      );
+    }
+    const notReady =
+      `CHANGELOG.md at HEAD is not ready for ${version}:\n` +
+      verdict.changelogProblems.map((p) => `    ${p}`).join("\n");
+    if (FORCE) {
+      console.warn(`\n! ${notReady}\n  FORCE=true is set. Continuing.`);
+    } else {
+      die(`${notReady}\n  Or run with FORCE=true.`);
+    }
   }
 
   console.log(
@@ -465,6 +641,8 @@ if (import.meta.main) {
   const arg = Bun.argv[2];
   if (arg === "--tag") {
     await tagAndPublish();
+  } else if (arg === "--check") {
+    await checkRelease();
   } else {
     await prepare(arg || "patch");
   }
