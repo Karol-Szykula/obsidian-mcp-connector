@@ -150,14 +150,17 @@ See [ADR-0030](docs/architecture/ADR-0030-release-from-actions.md) for why.
 6. **Release notes**: GitHub appends generated notes from the merged PRs to the release.
 
 **Fallback, from a terminal**, when Actions is unavailable: `bun run version <part>`, merge the PR,
-`git checkout main && git pull --ff-only`, then `bun run version:tag`. `DRY_RUN=1` on either
+`git checkout main && git pull --ff-only`, then `bun run version:tag`. The tag push is refused while
+the ruleset `release-tags-via-actions` is active (only the App may create a tag), so switch it off
+in Settings, Rules first and back on afterwards. `DRY_RUN=1` on either
 prints every mutating command and still runs every read-only check. `bun run version:check` says
 whether HEAD is a release still waiting for its tag.
 
 **One-time setup** (repository admin): a GitHub App with Contents and Pull requests write and
 Metadata read, installed on this repository only; the secret `RELEASE_APP_PRIVATE_KEY` and the
 variable `RELEASE_APP_CLIENT_ID`; environments `release-prepare` (no reviewers) and `release`
-(required reviewer, "Prevent self-review" off), both limited to the `main` branch.
+(required reviewer, "Prevent self-review" off), both limited to the `main` branch; a tag ruleset on
+`refs/tags/*` (`creation`, `update`, `non_fast_forward`) with the App as its only bypass actor.
 
 ### Maintainer Responsibilities
 - **Code review**: Review PRs for quality, security, and architecture compliance
