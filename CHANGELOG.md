@@ -5,6 +5,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), version
 
 ## [Unreleased]
 
+### Fixed
+
+- **Background work now applies the vault-wide excluded-folder list.** Semantic indexing and the check that decides whether to announce a changed prompt list read the policy of whichever request happened to be in flight when a vault event fired. They now read the vault-wide list explicitly. Nothing changes today, because there is one list for every client, and the fix keeps it that way once clients get lists of their own. The indexer half was proposed by @Neonsy in #616.
+
 ## [3.0.3] — 2026-10-15
 
 ### Added

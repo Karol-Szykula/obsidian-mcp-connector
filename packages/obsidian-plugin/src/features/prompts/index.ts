@@ -53,6 +53,14 @@ export type PromptsSetupOptions = {
    */
   notifyPromptsChanged?: () => void;
   /**
+   * The App the list-changed baseline and its debounced rescan read through.
+   * Both run outside a request (plugin load, a vault event), so this App
+   * must resolve the vault-wide policy rather than a request-scoped one,
+   * and the baseline they compute drives a broadcast every client sees.
+   * Defaults to `app`, which is right only when that App already does.
+   */
+  vaultWideApp?: App;
+  /**
    * Override {@link NOTIFY_DEBOUNCE_MS}. Same escape hatch as the semantic
    * indexer's `debounceMs` (`semantic-search/services/indexer.ts`): tests
    * need the comparison to run promptly, and half a second per assertion
@@ -69,7 +77,11 @@ export async function setup(
   | { success: true; state: PromptsFeatureState }
   | { success: false; error: string }
 > {
-  const { notifyPromptsChanged, debounceMs = NOTIFY_DEBOUNCE_MS } = options;
+  const {
+    notifyPromptsChanged,
+    vaultWideApp = app,
+    debounceMs = NOTIFY_DEBOUNCE_MS,
+  } = options;
   try {
     // Memoized discovery: prompts/list used to re-scan every markdown
     // file and cachedRead each candidate on every call. The watcher
@@ -144,7 +156,7 @@ export async function setup(
     // watcher event is judged against the vault as it was at load, not
     // against nothing — otherwise the first save of the session always
     // looks like a change.
-    let lastNotified = canonical(await discoverPrompts(app));
+    let lastNotified = canonical(await discoverPrompts(vaultWideApp));
 
     let timer: number | null = null;
     const stopNotifier = (): void => {
@@ -176,7 +188,7 @@ export async function setup(
         timer = null;
         void (async () => {
           try {
-            const next = canonical(await discoverPrompts(app));
+            const next = canonical(await discoverPrompts(vaultWideApp));
             // A save that touched neither the description nor the argument
             // declarations changes no byte a client can see, so it is not a
             // list change and must not be announced as one.

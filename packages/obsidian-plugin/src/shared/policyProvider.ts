@@ -100,7 +100,14 @@ export class PathPolicyProvider {
     return this.vaultWidePolicy;
   }
 
-  /** The vault-wide policy from the last successful read. */
+  /**
+   * The vault-wide policy from the last successful read.
+   *
+   * What code that is not serving a request reads: the semantic indexer
+   * and the prompts list-changed baseline. Both feed state shared by every
+   * client, so neither may inherit the policy of whichever request happens
+   * to be in flight, and neither touches `AsyncLocalStorage`.
+   */
   get vaultWide(): PathPolicy {
     return this.vaultWidePolicy;
   }
@@ -124,11 +131,15 @@ export class PathPolicyProvider {
   /**
    * The policy in force right now.
    *
-   * Inside `runWith`, that request's policy. Outside it — the settings
-   * UI, a background task, a unit test — the vault-wide policy, never
-   * "no policy". Phase 2 keeps this rule: an absent request scope means
-   * the vault-wide list still applies, because that list is the user's
-   * statement about the vault rather than about any one client.
+   * For request paths only. Inside `runWith`, that request's policy.
+   * Outside it — the settings UI, a unit test — the vault-wide policy,
+   * never "no policy". Phase 2 keeps this rule: an absent request scope
+   * means the vault-wide list still applies, because that list is the
+   * user's statement about the vault rather than about any one client.
+   *
+   * A background task (a vault event handler, a timer, plugin load) reads
+   * {@link vaultWide} instead: the fallback above makes a stray call here
+   * harmless today, and a bug the day a request's policy differs.
    */
   current(): PathPolicy {
     return this.storage.getStore() ?? this.vaultWidePolicy;

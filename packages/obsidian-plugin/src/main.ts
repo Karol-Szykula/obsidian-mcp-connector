@@ -179,10 +179,23 @@ export default class McpToolsPlugin extends Plugin {
           "onload: refusing to wire prompts against an unguarded App (ADR-0020 D1).",
         );
       }
+      // The list-changed baseline runs at load and on vault events, never
+      // inside a request, so it reads the vault-wide policy explicitly
+      // (ADR-0020 D11) instead of the request-scoped one above.
+      const promptsVaultWideApp = createGuardedApp(
+        this.app,
+        () => pathPolicyFor(this).vaultWide,
+      );
+      if (!isGuardedApp(promptsVaultWideApp)) {
+        throw new Error(
+          "onload: refusing to wire prompts against an unguarded App (ADR-0020 D1).",
+        );
+      }
       const promptsResult = await promptsSetup(
         mcpResult.state.mcp.promptRegistry,
         promptsApp,
         {
+          vaultWideApp: promptsVaultWideApp,
           // ADR-0017: the prompts feature decides WHEN the list changed, the
           // transport owns HOW it is published. Wiring it here rather than
           // inside the transport keeps the vault-watching in the feature
