@@ -1,5 +1,8 @@
 # MCP Connector for Obsidian
 
+> [!WARNING]
+> **Known issue: on Obsidian 1.14.4 the window can go blank while this plugin loads.** It affects macOS and Windows and is a crash of Obsidian's renderer inside Electron 43, not in this plugin's code. In my tests it happens in roughly one plugin load out of ten, at random. Restart Obsidian and enable the plugin again: that usually works. I saw no crash on Electron 39.8.3 (Obsidian installer 1.12.7), so I believe the cause is in the Electron and V8 build that Obsidian 1.14.4 ships. I have no workaround from the plugin side yet. Reported to Obsidian [on their forum](https://forum.obsidian.md/t/renderer-sigsegv-on-macos-and-windows-with-electron-43-obsidian-1-14-4-when-a-large-community-plugin-loads-none-on-electron-39-8-3/119487), tracked here in [#597](https://github.com/istefox/obsidian-mcp-connector/issues/597) and [#609](https://github.com/istefox/obsidian-mcp-connector/issues/609).
+
 [![GitHub release (latest by date)](https://img.shields.io/github/v/release/istefox/obsidian-mcp-connector?display_name=tag)](https://github.com/istefox/obsidian-mcp-connector/releases/latest)
 [![Build status](https://img.shields.io/github/actions/workflow/status/istefox/obsidian-mcp-connector/release.yml)](https://github.com/istefox/obsidian-mcp-connector/actions)
 [![License](https://img.shields.io/github/license/istefox/obsidian-mcp-connector)](LICENSE)
