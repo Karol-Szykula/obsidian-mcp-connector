@@ -4,7 +4,8 @@ name: CI
 # bundle build-smoke + every test suite, the stdlib Python one for the Windows
 # bridge included; `bridge-tests` runs that Python suite a second time on
 # windows-latest, where its bug actually lived; `discovery-broker-tests` runs
-# the broker's focused contract on all three desktop operating systems. Runs on
+# the broker's focused contract on all three desktop operating systems;
+# `headless-tests` builds the headless file and smoke-tests it on Node. Runs on
 # every push to main and on every PR targeting
 # main. The build step here is a smoke
 # check that catches a non-buildable bundle (e.g. Svelte/patch version
@@ -174,3 +175,30 @@ jobs:
 
       - name: Tests — discovery broker
         run: bun test packages/obsidian-plugin/src/features/mcp-client-config/services/brokerServer.test.ts packages/obsidian-plugin/src/features/mcp-client-config/services/codexConfig.test.ts packages/obsidian-plugin/src/features/mcp-client-config/services/codexInstallFlow.test.ts packages/obsidian-plugin/src/features/mcp-client-config/services/discoveryBroker.test.ts packages/obsidian-plugin/src/features/mcp-client-config/services/endpoint.test.ts packages/obsidian-plugin/src/features/mcp-client-config/services/routeLifecycle.test.ts
+
+  # Builds the headless file and runs its smoke test under real Node at the
+  # documented minimum, so a broken headless build fails on the PR instead of
+  # after a release tag.
+  headless-tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24.11"
+
+      - name: Install Dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Tests — headless build and smoke
+        run: bun run test:headless

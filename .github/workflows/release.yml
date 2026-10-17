@@ -75,9 +75,14 @@ jobs:
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v4
         with:
-          subject-path: |
-            main.js
-            packages/obsidian-plugin/dist/headless/obsidian-mcp-headless.js
+          subject-path: main.js
+
+      # Its own step, not a second subject above: Obsidian's build verification
+      # checks the `main.js` attestation, which stays exactly as it was.
+      - name: Generate headless artifact attestation
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: packages/obsidian-plugin/dist/headless/obsidian-mcp-headless.js
 
       # Community-verified attestation recipe ordering
       # (forum.obsidian.md/t/114445): the attestation must exist BEFORE the
