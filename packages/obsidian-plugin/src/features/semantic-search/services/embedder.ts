@@ -285,9 +285,10 @@ export function createEmbedder(opts: EmbedderOpts): Embedder {
  * Transformers.js's image pipelines pull in) is never touched in the
  * text-only path we actually use.
  */
-// Static import required: Obsidian's eval-based plugin loader cannot
-// resolve node_modules at runtime; a bundled require() works, a
-// dynamic `import(...)` would 404.
+// Loaded through transformersModule.ts: a bundled require() on first use.
+// Obsidian's eval-based plugin loader cannot resolve node_modules at
+// runtime, so this must stay a require() the bundler resolves, never a
+// dynamic `import(...)`, which would 404.
 //
 // `sharp` is stubbed at bundle time (image pipelines are unreachable in
 // our text-only path). `onnxruntime-node` is REDIRECTED to
@@ -306,7 +307,7 @@ export function createEmbedder(opts: EmbedderOpts): Embedder {
 // requestAdapter(); on success we configure JSEP WASM env (no numThreads
 // override) and use "webgpu"; on failure we configure CPU env (numThreads:1)
 // and use "cpu". Valid v4.2.0 devices: "coreml" | "webgpu" | "cpu".
-import { pipeline as _hfPipeline } from "@huggingface/transformers";
+import { transformers } from "./transformersModule";
 import type { BackendKind } from "../types";
 import { configureEnv, configureEnvForWebGpu } from "./onnxEnv";
 import { logger } from "$/shared/logger";
@@ -421,11 +422,11 @@ export async function realPipelineFactory(
     backend,
     opts?.dtype,
     onProgress,
-  ) as Parameters<typeof _hfPipeline>[2];
+  ) as Parameters<ReturnType<typeof transformers>["pipeline"]>[2];
 
   // On WebGPU there is no CPU fallback: a failed WebGPU attempt corrupts
   // onnxruntime-web's internal session state — subsequent cpu calls also get
   // "webgpu backend not found". Let the error propagate so the caller can
   // surface it cleanly.
-  return _hfPipeline("feature-extraction", model, options);
+  return transformers().pipeline("feature-extraction", model, options);
 }

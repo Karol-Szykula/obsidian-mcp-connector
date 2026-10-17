@@ -35,10 +35,8 @@
  * `device: "webgpu"` always fails with "backend not found".
  */
 
-// Static import required: Obsidian's eval-based plugin loader cannot
-// resolve node_modules at runtime; a bundled require() works, a
-// dynamic `import(...)` would 404.
-import { env as _hfEnv } from "@huggingface/transformers";
+// Transformers.js loads on first use (transformersModule.ts), not with the plugin.
+import { transformers } from "./transformersModule";
 import { logger } from "$/shared/logger";
 
 // Stable build; required for ONNX IR v10 support (onnxruntime-web ≥ 1.20).
@@ -79,7 +77,7 @@ function applyCommon(e: HfEnv): void {
 export function configureEnv(): void {
   if (_cpuEnvConfigured) return;
   _cpuEnvConfigured = true;
-  const e = _hfEnv as unknown as HfEnv;
+  const e = transformers().env as unknown as HfEnv;
   applyCommon(e);
   if (e.backends?.onnx?.wasm) {
     e.backends.onnx.wasm.numThreads = 1;
@@ -96,7 +94,7 @@ export function configureEnv(): void {
 export function configureEnvForWebGpu(): void {
   if (_webgpuEnvConfigured) return;
   _webgpuEnvConfigured = true;
-  const e = _hfEnv as unknown as HfEnv;
+  const e = transformers().env as unknown as HfEnv;
   applyCommon(e);
   // numThreads intentionally not set — JSEP WASM handles its own threading.
 }
