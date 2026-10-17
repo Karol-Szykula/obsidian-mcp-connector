@@ -288,19 +288,25 @@ export async function wireSemanticSearch(
     };
 
     // Language detection for multilingual provider suggestion (fire-and-forget).
-    detectNonAsciiRatio(ssVault)
-      .then((ratio) => {
-        if (
-          ratio > 0.3 &&
-          state.settings.provider !== "embedding-gemma" &&
-          state.settings.provider !== "multilingual-e5-base"
-        ) {
-          state.autoSuggestProvider = "embedding-gemma-300m";
-        }
-      })
-      .catch(() => {
-        // best-effort — non-ASCII sampling failure must not affect startup
-      });
+    // Deferred to onLayoutReady: during onload() getMarkdownFiles() can be
+    // empty or partial (Obsidian's vault scan is still in flight), so the
+    // sample came out empty and the suggestion never fired, and the 50 file
+    // reads ran inside plugin load. Only the settings tab reads the result.
+    plugin.app.workspace.onLayoutReady(() => {
+      detectNonAsciiRatio(ssVault)
+        .then((ratio) => {
+          if (
+            ratio > 0.3 &&
+            state.settings.provider !== "embedding-gemma" &&
+            state.settings.provider !== "multilingual-e5-base"
+          ) {
+            state.autoSuggestProvider = "embedding-gemma-300m";
+          }
+        })
+        .catch(() => {
+          // best-effort — non-ASCII sampling failure must not affect startup
+        });
+    });
 
     // Map from `SemanticSearchSettings.provider` string to the
     // registry providerKey. Declared once here and reused by both the
