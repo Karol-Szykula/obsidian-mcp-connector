@@ -163,9 +163,10 @@ The command exits 0 when the file matches the attestation recorded for that rele
 
 | Version | Status | Security policy |
 |---|---|---|
-| **0.4.x** | **Current — full support** | Critical and high vulnerabilities patched; plugin-only release line. Latest: `0.4.8` (2026-05-16). |
+| **3.x** | **Current — full support** | Critical and high vulnerabilities patched; plugin-only release line. Latest: `3.0.3` (2026-10-15). |
+| 0.4.x to 2.x | Superseded | Fixes ship as new tags on `main` (roll forward only), so a security fix reaches the latest 3.x release only. Update to the latest 3.x. |
 | **0.3.x** | Legacy — critical fixes only | Binary release line for users on the standalone-server architecture. Patched only for actively exploited or data-loss-class issues. Latest: `0.3.12` (2026-04-28). |
-| 0.2.x and earlier | End of life | No support. Users should migrate to `0.4.0` (or `0.3.12` if the binary architecture is required). |
+| 0.2.x and earlier | End of life | No support. Users should migrate to the latest 3.x (or `0.3.12` if the binary architecture is required). |
 
 ## Security Update Policy
 
@@ -175,7 +176,7 @@ Time-to-patch targets, measured from confirmed report:
 - **High** (privilege escalation within the documented threat model, authentication bypass requiring local access, persistent unauthorized state changes): patch within 30 days.
 - **Moderate / Low**: addressed in the next regular release.
 
-Patches for the 0.4.x line ship as new tags on `main` (roll forward only — published `0.*` tags are immutable). Any critical-only 0.3.x patch would ship from the archived `archive/main-0.3.12` branch as a new 0.3.x tag.
+Patches for the current line ship as new tags on `main` (roll forward only — published `0.*` tags are immutable). Any critical-only 0.3.x patch would ship from the archived `archive/main-0.3.12` branch as a new 0.3.x tag.
 
 ## Best Practices for Users
 
