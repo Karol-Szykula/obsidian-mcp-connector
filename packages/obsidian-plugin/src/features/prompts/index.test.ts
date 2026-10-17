@@ -1,15 +1,18 @@
 import { describe, expect, test, beforeEach, spyOn } from "bun:test";
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   fireMockMetadataEvent,
   fireMockVaultEvent,
   mockApp,
+  mockPlugin,
   resetMockVault,
   setMockFile,
   setMockMetadata,
 } from "$/test-setup";
 import { PromptRegistryClass } from "$/features/mcp-transport/services/promptRegistry";
 import { createGuardedApp } from "$/shared/guardedApp";
-import { compilePolicy } from "$/shared/pathPolicy";
+import { compilePolicy, EMPTY_POLICY } from "$/shared/pathPolicy";
+import { pathPolicyFor } from "$/shared/policyProvider";
 import { setup, teardown } from "./index";
 
 beforeEach(() => {
@@ -542,6 +545,142 @@ describe("prompts list vs the metadata indexing window", () => {
     // told the set had changed and then shown that it had not.
     expect(calls).toHaveLength(1);
     expect((await registry.list()).prompts).toHaveLength(2);
+    teardown(result.state);
+  });
+});
+
+/**
+ * ADR-0020 D11: the list-changed baseline and its debounced rescan run at
+ * plugin load and on vault events, never inside a request. They read the
+ * vault-wide policy through `vaultWideApp` and must not touch
+ * `AsyncLocalStorage`, or they would inherit the policy of whichever
+ * request happened to be in flight. `current()` falls back to the vault-wide
+ * policy outside a scope, so only a spy on `getStore` and a scope opened on
+ * purpose can tell the two reads apart.
+ */
+describe("prompts background reads stay off the request scope", () => {
+  const DEBOUNCE = 5;
+  const settle = () => new Promise((r) => setTimeout(r, DEBOUNCE + 40));
+
+  function promptFile(path: string, description: string): void {
+    setMockFile(path, "Body");
+    setMockMetadata(path, {
+      frontmatter: { tags: ["mcp-tools-prompt"], description },
+    });
+  }
+
+  /** A real provider whose vault-wide policy excludes `excluded`. */
+  async function providerExcluding(excluded: string[]) {
+    const provider = pathPolicyFor(
+      mockPlugin({
+        loadData: async () => ({ mcpTools: { excludedFolders: excluded } }),
+      }),
+    );
+    await provider.refresh();
+    return provider;
+  }
+
+  /** The two Apps main.ts builds: request-scoped and vault-wide. */
+  function appsFor(provider: Awaited<ReturnType<typeof providerExcluding>>) {
+    return {
+      app: createGuardedApp(mockApp(), () => provider.current()),
+      vaultWideApp: createGuardedApp(mockApp(), () => provider.vaultWide),
+    };
+  }
+
+  test("load and a vault event never read AsyncLocalStorage", async () => {
+    promptFile("Prompts/greet.md", "one");
+    const provider = await providerExcluding([]);
+    const { app, vaultWideApp } = appsFor(provider);
+    const getStore = spyOn(AsyncLocalStorage.prototype, "getStore");
+    const calls: number[] = [];
+
+    try {
+      const result = await setup(new PromptRegistryClass(), app, {
+        vaultWideApp,
+        notifyPromptsChanged: () => calls.push(1),
+        debounceMs: DEBOUNCE,
+      });
+      if (!result.success) throw new Error(result.error);
+      expect(getStore).toHaveBeenCalledTimes(0);
+
+      promptFile("Prompts/greet.md", "two");
+      fireMockVaultEvent("modify", { path: "Prompts/greet.md" });
+      await settle();
+
+      // The rescan ran and found a real change, and still never asked.
+      expect(calls).toHaveLength(1);
+      expect(getStore).toHaveBeenCalledTimes(0);
+      teardown(result.state);
+    } finally {
+      getStore.mockRestore();
+    }
+  });
+
+  test("a request-path read still resolves the request scope", async () => {
+    promptFile("Prompts/greet.md", "one");
+    const provider = await providerExcluding([]);
+    const { app, vaultWideApp } = appsFor(provider);
+    const registry = new PromptRegistryClass();
+    const result = await setup(registry, app, { vaultWideApp });
+    if (!result.success) throw new Error(result.error);
+    const getStore = spyOn(AsyncLocalStorage.prototype, "getStore");
+
+    try {
+      // The over-correction guard: moving the background reads must not
+      // have moved the lister off the request scope.
+      await provider.runWith(EMPTY_POLICY, () => registry.list());
+      expect(getStore.mock.calls.length).toBeGreaterThan(0);
+    } finally {
+      getStore.mockRestore();
+      teardown(result.state);
+    }
+  });
+
+  test("an event raised inside another request's scope decides the same", async () => {
+    // Every prompt lives under Prompts/, and the vault-wide list excludes
+    // it, so no prompt is visible to a list-changed comparison.
+    const provider = await providerExcluding(["Prompts"]);
+    const { app, vaultWideApp } = appsFor(provider);
+    const calls: number[] = [];
+    const result = await setup(new PromptRegistryClass(), app, {
+      vaultWideApp,
+      notifyPromptsChanged: () => calls.push(1),
+      debounceMs: DEBOUNCE,
+    });
+    if (!result.success) throw new Error(result.error);
+
+    // A request whose own policy excludes nothing is in flight when the
+    // vault event arrives. The debounce timer is armed inside its scope.
+    promptFile("Prompts/second.md", "two");
+    provider.runWith(EMPTY_POLICY, () =>
+      fireMockVaultEvent("create", { path: "Prompts/second.md" }),
+    );
+    await settle();
+
+    // Read through the request-scoped App, the rescan would see the new
+    // prompt and announce it to every client. Vault-wide, it sees nothing.
+    expect(calls).toHaveLength(0);
+    teardown(result.state);
+  });
+
+  test("a vault-wide exclusion hides a prompt from the baseline", async () => {
+    promptFile("Prompts/greet.md", "one");
+    const provider = await providerExcluding(["Prompts"]);
+    const { app, vaultWideApp } = appsFor(provider);
+    const calls: number[] = [];
+    const result = await setup(new PromptRegistryClass(), app, {
+      vaultWideApp,
+      notifyPromptsChanged: () => calls.push(1),
+      debounceMs: DEBOUNCE,
+    });
+    if (!result.success) throw new Error(result.error);
+
+    promptFile("Prompts/greet.md", "edited");
+    fireMockVaultEvent("modify", { path: "Prompts/greet.md" });
+    await settle();
+
+    expect(calls).toHaveLength(0);
     teardown(result.state);
   });
 });
