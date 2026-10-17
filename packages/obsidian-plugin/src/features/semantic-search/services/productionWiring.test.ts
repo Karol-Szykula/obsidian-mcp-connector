@@ -14,7 +14,12 @@ import {
 } from "./store";
 import { compilePolicy, EMPTY_POLICY } from "$/shared/pathPolicy";
 import { TFile } from "obsidian";
-import { fireMockVaultEvent, mockPlugin } from "$/test-setup";
+import {
+  fireMockVaultEvent,
+  mockPlugin,
+  resetMockVault,
+  setMockFile,
+} from "$/test-setup";
 import { pathPolicyFor } from "$/shared/policyProvider";
 import { captureLogLines } from "$/shared/log/logCapture";
 
@@ -421,5 +426,67 @@ describe("indexer policy source", () => {
         getStore.mockRestore();
       }
     });
+  });
+});
+
+/**
+ * The multilingual-provider suggestion samples vault files. It must wait for
+ * onLayoutReady: during onload() `getMarkdownFiles()` can still be empty, and
+ * the 50 reads would run inside plugin load.
+ */
+describe("language sampling timing", () => {
+  function deferredLayoutPlugin() {
+    const mem = memAdapter();
+    const ready: Array<() => void> = [];
+    const plugin = mockPlugin({
+      loadData: async () => ({}),
+      saveData: async () => undefined,
+    });
+    const app = plugin.app as unknown as {
+      vault: Record<string, unknown>;
+      workspace: Record<string, unknown>;
+    };
+    app.vault.adapter = mem.adapter;
+    app.vault.configDir = ".obsidian";
+    app.workspace.onLayoutReady = (cb: () => void) => {
+      ready.push(cb);
+    };
+    (plugin.manifest as { dir?: string }).dir = "/p";
+    return { plugin, ready };
+  }
+
+  test("sampling waits for onLayoutReady, so a vault that scans in late is still sampled", async () => {
+    resetMockVault();
+    const { plugin, ready } = deferredLayoutPlugin();
+    const state = await wireSemanticSearch(plugin);
+    try {
+      // onload() finished with an empty vault: nothing sampled yet.
+      expect(state?.autoSuggestProvider ?? null).toBeNull();
+      // The vault scan completes, then Obsidian fires onLayoutReady.
+      for (let i = 0; i < 5; i++) {
+        setMockFile(`Notes/n${i}.md`, "これは日本語のノートです。".repeat(20));
+      }
+      for (const cb of ready) cb();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(state?.autoSuggestProvider).toBe("embedding-gemma-300m");
+    } finally {
+      await state?.teardown();
+      resetMockVault();
+    }
+  });
+
+  test("an ASCII vault leaves the suggestion unset", async () => {
+    resetMockVault();
+    const { plugin, ready } = deferredLayoutPlugin();
+    const state = await wireSemanticSearch(plugin);
+    try {
+      setMockFile("Notes/a.md", "plain ascii text ".repeat(40));
+      for (const cb of ready) cb();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(state?.autoSuggestProvider ?? null).toBeNull();
+    } finally {
+      await state?.teardown();
+      resetMockVault();
+    }
   });
 });
