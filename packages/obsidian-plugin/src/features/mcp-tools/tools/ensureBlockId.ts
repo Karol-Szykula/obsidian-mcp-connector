@@ -11,6 +11,7 @@ import {
 } from "../services/blockId";
 import { buildObsidianUri } from "../services/buildObsidianUri";
 import { resolveTFile } from "../services/resolveTFile";
+import { fsErrorMessage } from "../services/fsErrorMessage";
 import { errorJson, successJson } from "../services/responseBuilders";
 import { withVaultWriteLock } from "../services/vaultWriteLock";
 
@@ -189,7 +190,7 @@ export async function ensureBlockIdHandler(ctx: EnsureBlockIdContext): Promise<{
     }
   } catch (error) {
     return errorJson(
-      `Failed to update ${path}: ${error instanceof Error ? error.message : String(error)}`,
+      `Failed to update ${path}: ${fsErrorMessage(error)}`,
       "write_failed",
       { path },
     );

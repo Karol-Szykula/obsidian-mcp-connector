@@ -1,6 +1,7 @@
 import { type } from "arktype";
 import type { App } from "obsidian";
 import { resolveTFile } from "../services/resolveTFile";
+import { fsErrorMessage } from "../services/fsErrorMessage";
 import { errorJson, successJson } from "../services/responseBuilders";
 import {
   parseTaskLine,
@@ -129,7 +130,7 @@ export async function setTaskStatusHandler(ctx: SetTaskStatusContext): Promise<{
     );
   } catch (error) {
     return errorJson(
-      `Failed to update ${path}: ${error instanceof Error ? error.message : String(error)}`,
+      `Failed to update ${path}: ${fsErrorMessage(error)}`,
       "write_failed",
       { path, line },
     );

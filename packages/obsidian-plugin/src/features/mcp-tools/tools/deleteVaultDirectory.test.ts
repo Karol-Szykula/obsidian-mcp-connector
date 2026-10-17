@@ -317,5 +317,27 @@ describe("delete_vault_directory tool", () => {
       expect(getMockTrashedPaths()).toEqual([]);
       expect(getMockFolders()).toEqual([]);
     });
+
+    // Sister guard to the rmdir #88 tests above: the trashFile catch used to
+    // bubble `e.message` verbatim, absolute host path included.
+    test("a trashFile failure suppresses the absolute host path", async () => {
+      setMockFolder("Locked");
+      const app = mockApp();
+      app.fileManager.trashFile = async () => {
+        const e = new Error(
+          "EPERM: operation not permitted, rename '/Users/someone/Vault/Locked'",
+        ) as NodeJS.ErrnoException;
+        e.code = "EPERM";
+        throw e;
+      };
+      const result = await deleteVaultDirectoryHandler({
+        arguments: { path: "Locked", trash: true },
+        app,
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain("permission denied");
+      expect(result.content[0].text).not.toMatch(/\/Users\/|\/home\/|C:\\/);
+      expect(getMockFolders()).toEqual(["Locked"]);
+    });
   });
 });

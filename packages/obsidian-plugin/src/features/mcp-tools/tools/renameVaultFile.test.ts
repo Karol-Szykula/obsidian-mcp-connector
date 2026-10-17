@@ -122,4 +122,29 @@ describe("rename_vault_file tool", () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/simulated obsidian failure/i);
   });
+
+  // #88-style guard: a Node-shaped fs rejection must not bubble the
+  // absolute host path into the MCP response.
+  test("a Node fs rejection suppresses the absolute host path", async () => {
+    setMockFile("a.md", "x");
+    const app = mockApp();
+    (
+      app.fileManager as unknown as {
+        renameFile: (...args: unknown[]) => Promise<void>;
+      }
+    ).renameFile = async () => {
+      const e = new Error(
+        "ENOENT: no such file or directory, rename '/Users/someone/Vault/a.md' -> '/Users/someone/Vault/b.md'",
+      ) as NodeJS.ErrnoException;
+      e.code = "ENOENT";
+      throw e;
+    };
+    const result = await renameVaultFileHandler({
+      arguments: { from: "a.md", to: "b.md" },
+      app,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("does not exist");
+    expect(result.content[0].text).not.toMatch(/\/Users\/|\/home\/|C:\\/);
+  });
 });

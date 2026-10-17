@@ -1,4 +1,5 @@
 import { type } from "arktype";
+import { fsErrorMessage } from "../services/fsErrorMessage";
 import {
   errorJson,
   successJson,
@@ -140,7 +141,7 @@ export async function deleteVaultDirectoryHandler(
         await ctx.app.fileManager.trashFile(folder);
       } catch (e) {
         return errorJson(
-          `Failed to delete directory ${trimmed}: ${e instanceof Error ? e.message : String(e)}`,
+          `Failed to delete directory ${trimmed}: ${fsErrorMessage(e)}`,
           "delete_failed",
           { path: trimmed },
         );
@@ -170,7 +171,7 @@ export async function deleteVaultDirectoryHandler(
             ? ["directory does not exist", "folder_not_found"]
             : errno === "EACCES" || errno === "EPERM"
               ? ["permission denied", "permission_denied"]
-              : [e instanceof Error ? e.message : String(e), "delete_failed"];
+              : [fsErrorMessage(e), "delete_failed"];
       return errorJson(
         `Failed to delete directory ${trimmed}: ${msg}`,
         errorCode,

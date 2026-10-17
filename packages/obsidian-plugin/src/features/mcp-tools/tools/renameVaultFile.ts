@@ -1,4 +1,5 @@
 import { type } from "arktype";
+import { fsErrorMessage } from "../services/fsErrorMessage";
 import { errorJson } from "../services/responseBuilders";
 import type { App, TAbstractFile } from "obsidian";
 import { withVaultWriteLock } from "$/features/mcp-tools/services/vaultWriteLock";
@@ -83,7 +84,7 @@ export async function renameVaultFileHandler(
       ).renameFile(source, to);
     } catch (e) {
       return errorJson(
-        `Failed to rename: ${e instanceof Error ? e.message : String(e)}`,
+        `Failed to rename: ${fsErrorMessage(e)}`,
         "rename_failed",
         { from, to },
       );

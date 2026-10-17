@@ -1,4 +1,5 @@
 import { type } from "arktype";
+import { fsErrorMessage } from "../services/fsErrorMessage";
 import { errorJson } from "../services/responseBuilders";
 import { type App, type TFile } from "obsidian";
 import { resolveTFile } from "../services/resolveTFile";
@@ -330,7 +331,7 @@ async function runCoreTemplates(
     raw = await ctx.app.vault.read(templateFile);
   } catch (err) {
     return errorJson(
-      `Core Templates could not read template file: ${err instanceof Error ? err.message : String(err)}`,
+      `Core Templates could not read template file: ${fsErrorMessage(err)}`,
       "core_templates_execution_failed",
       { templatePath },
     );

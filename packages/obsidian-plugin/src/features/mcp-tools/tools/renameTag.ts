@@ -1,5 +1,6 @@
 import { type } from "arktype";
 import type { App, TFile } from "obsidian";
+import { fsErrorMessage } from "../services/fsErrorMessage";
 import { errorJson, successJson } from "../services/responseBuilders";
 import { withVaultWriteLock } from "../services/vaultWriteLock";
 import { comparePaths } from "../services/pathUtils";
@@ -334,7 +335,7 @@ export async function renameTagHandler(ctx: RenameTagContext): Promise<{
       } catch (error) {
         failed.push({
           path: file.path,
-          error: error instanceof Error ? error.message : String(error),
+          error: fsErrorMessage(error),
         });
         continue;
       }
