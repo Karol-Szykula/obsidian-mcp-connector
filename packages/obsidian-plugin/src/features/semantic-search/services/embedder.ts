@@ -307,7 +307,7 @@ export function createEmbedder(opts: EmbedderOpts): Embedder {
 // requestAdapter(); on success we configure JSEP WASM env (no numThreads
 // override) and use "webgpu"; on failure we configure CPU env (numThreads:1)
 // and use "cpu". Valid v4.2.0 devices: "coreml" | "webgpu" | "cpu".
-import { transformers } from "./transformersModule";
+import { loadTransformers } from "./transformersModule";
 import type { BackendKind } from "../types";
 import { configureEnv, configureEnvForWebGpu } from "./onnxEnv";
 import { logger } from "$/shared/logger";
@@ -366,7 +366,7 @@ async function resolveBackendInner(
   navigatorRef: NavigatorLike | undefined,
 ): Promise<BackendKind> {
   if (!navigatorRef?.gpu) {
-    configureEnv();
+    await configureEnv();
     return "wasm";
   }
   try {
@@ -374,13 +374,13 @@ async function resolveBackendInner(
     if (adapter !== null) {
       // JSEP WASM path: omit numThreads so onnxruntime-web selects
       // ort-wasm-simd.jsep.wasm, which registers the WebGPU EP.
-      configureEnvForWebGpu();
+      await configureEnvForWebGpu();
       return "webgpu";
     }
   } catch {
     // adapter probe failed — fall through to wasm
   }
-  configureEnv();
+  await configureEnv();
   return "wasm";
 }
 
@@ -422,11 +422,15 @@ export async function realPipelineFactory(
     backend,
     opts?.dtype,
     onProgress,
-  ) as Parameters<ReturnType<typeof transformers>["pipeline"]>[2];
+  ) as Parameters<Awaited<ReturnType<typeof loadTransformers>>["pipeline"]>[2];
 
   // On WebGPU there is no CPU fallback: a failed WebGPU attempt corrupts
   // onnxruntime-web's internal session state — subsequent cpu calls also get
   // "webgpu backend not found". Let the error propagate so the caller can
   // surface it cleanly.
-  return transformers().pipeline("feature-extraction", model, options);
+  return (await loadTransformers()).pipeline(
+    "feature-extraction",
+    model,
+    options,
+  );
 }

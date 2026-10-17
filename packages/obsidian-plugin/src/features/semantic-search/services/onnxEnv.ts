@@ -36,7 +36,7 @@
  */
 
 // Transformers.js loads on first use (transformersModule.ts), not with the plugin.
-import { transformers } from "./transformersModule";
+import { loadTransformers } from "./transformersModule";
 import { logger } from "$/shared/logger";
 
 // Stable build; required for ONNX IR v10 support (onnxruntime-web ≥ 1.20).
@@ -74,10 +74,10 @@ function applyCommon(e: HfEnv): void {
   }
 }
 
-export function configureEnv(): void {
+export async function configureEnv(): Promise<void> {
   if (_cpuEnvConfigured) return;
   _cpuEnvConfigured = true;
-  const e = transformers().env as unknown as HfEnv;
+  const e = (await loadTransformers()).env as unknown as HfEnv;
   applyCommon(e);
   if (e.backends?.onnx?.wasm) {
     e.backends.onnx.wasm.numThreads = 1;
@@ -91,10 +91,10 @@ export function configureEnv(): void {
  * WebGPU execution provider. Call this only after confirming a WebGPU
  * adapter is available (navigator.gpu.requestAdapter() returned non-null).
  */
-export function configureEnvForWebGpu(): void {
+export async function configureEnvForWebGpu(): Promise<void> {
   if (_webgpuEnvConfigured) return;
   _webgpuEnvConfigured = true;
-  const e = transformers().env as unknown as HfEnv;
+  const e = (await loadTransformers()).env as unknown as HfEnv;
   applyCommon(e);
   // numThreads intentionally not set — JSEP WASM handles its own threading.
 }

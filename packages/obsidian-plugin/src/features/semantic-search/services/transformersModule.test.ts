@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { transformers } from "./transformersModule";
+import { loadTransformers } from "./transformersModule";
 
-describe("transformers()", () => {
-  test("resolves the library on demand and hands out the same module each time", () => {
-    const first = transformers();
+describe("loadTransformers()", () => {
+  test("resolves the library on demand and hands out the same module each time", async () => {
+    const first = await loadTransformers();
     expect(typeof first.pipeline).toBe("function");
     expect(typeof first.env).toBe("object");
-    expect(transformers()).toBe(first);
+    expect(await loadTransformers()).toBe(first);
   });
 });
 
