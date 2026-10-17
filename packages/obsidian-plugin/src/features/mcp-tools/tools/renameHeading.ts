@@ -1,4 +1,5 @@
 import { type } from "arktype";
+import { fsErrorMessage } from "../services/fsErrorMessage";
 import { errorJson, successText } from "../services/responseBuilders";
 import { TFile, type App } from "obsidian";
 import { resolveTFile } from "../services/resolveTFile";
@@ -219,7 +220,7 @@ async function renameHeadingLocked(ctx: RenameHeadingContext): Promise<{
     updatedFiles.push(plan.source.path);
   } catch (e) {
     return errorJson(
-      `Failed to write source file: ${e instanceof Error ? e.message : String(e)}`,
+      `Failed to write source file: ${fsErrorMessage(e)}`,
       "source_write_failed",
       { path },
     );
@@ -260,7 +261,7 @@ async function renameHeadingLocked(ctx: RenameHeadingContext): Promise<{
     } catch (e) {
       failedFiles.push({
         path: bp.path,
-        error: e instanceof Error ? e.message : String(e),
+        error: fsErrorMessage(e),
       });
     }
   }
