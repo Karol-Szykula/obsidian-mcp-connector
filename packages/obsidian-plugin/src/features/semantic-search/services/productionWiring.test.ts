@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   isIndexableFile,
   probeAndWipeStaleStores,
@@ -13,7 +14,8 @@ import {
 } from "./store";
 import { compilePolicy, EMPTY_POLICY } from "$/shared/pathPolicy";
 import { TFile } from "obsidian";
-import { mockPlugin } from "$/test-setup";
+import { fireMockVaultEvent, mockPlugin } from "$/test-setup";
+import { pathPolicyFor } from "$/shared/policyProvider";
 import { captureLogLines } from "$/shared/log/logCapture";
 
 /** In-memory adapter tracking text + binary files and remove() calls. */
@@ -319,5 +321,105 @@ describe("diagnostic log — semantic-search started", () => {
     } finally {
       await state?.teardown();
     }
+  });
+});
+
+/**
+ * ADR-0020 D11: the indexer runs on vault events, the `onLayoutReady`
+ * rebuild and work deferred past a tool call, none of them a request. It
+ * reads the vault-wide policy explicitly. `current()` falls back to that
+ * policy outside a scope, so only a scope opened on purpose, and a spy on
+ * `getStore`, can tell the two reads apart.
+ */
+describe("indexer policy source", () => {
+  /** A wired plugin whose vault-wide policy excludes `Private`. */
+  function wiringPlugin() {
+    const mem = memAdapter();
+    const data = { mcpTools: { excludedFolders: ["Private"] } };
+    const plugin = mockPlugin({
+      loadData: async () => data,
+      saveData: async () => undefined,
+    });
+    const app = plugin.app as unknown as {
+      vault: Record<string, unknown>;
+      workspace: Record<string, unknown>;
+    };
+    app.vault.adapter = mem.adapter;
+    app.vault.configDir = ".obsidian";
+    app.workspace.onLayoutReady = () => {};
+    (plugin.manifest as { dir?: string }).dir = "/p";
+    return plugin;
+  }
+
+  function note(path: string): TFile {
+    const f = Object.create(TFile.prototype) as TFile;
+    Object.assign(f, { path, extension: "md" });
+    return f;
+  }
+
+  /** Wires, starts the indexer without a rebuild, and runs `body`. */
+  async function withIndexer(
+    body: (ctx: {
+      pending: () => number;
+      runWith: (policy: typeof EMPTY_POLICY, fn: () => void) => void;
+    }) => void | Promise<void>,
+  ): Promise<void> {
+    const plugin = wiringPlugin();
+    const state = await wireSemanticSearch(plugin);
+    if (!state?.indexer) throw new Error("semantic search was not wired");
+    try {
+      await state.indexer.start({ initialRebuild: false });
+      const provider = pathPolicyFor(plugin);
+      await body({
+        pending: () => state.indexer!.pending(),
+        runWith: (policy, fn) => provider.runWith(policy, fn),
+      });
+    } finally {
+      await state.indexer.stop();
+      await state.teardown();
+    }
+  }
+
+  test("a vault-wide exclusion applies to a vault event", async () => {
+    await withIndexer(({ pending }) => {
+      fireMockVaultEvent("modify", note("Private/a.md"));
+      expect(pending()).toBe(0);
+      fireMockVaultEvent("modify", note("Other/a.md"));
+      expect(pending()).toBe(1);
+    });
+  });
+
+  test("an unrelated request scope does not lift the exclusion", async () => {
+    await withIndexer(({ pending, runWith }) => {
+      // A request whose own policy excludes nothing is in flight.
+      runWith(EMPTY_POLICY, () =>
+        fireMockVaultEvent("modify", note("Private/a.md")),
+      );
+      expect(pending()).toBe(0);
+    });
+  });
+
+  test("an unrelated request scope does not add an exclusion", async () => {
+    await withIndexer(({ pending, runWith }) => {
+      runWith(compilePolicy(["Other"]), () =>
+        fireMockVaultEvent("modify", note("Other/a.md")),
+      );
+      expect(pending()).toBe(1);
+    });
+  });
+
+  test("vault events never read AsyncLocalStorage", async () => {
+    await withIndexer(({ pending }) => {
+      const getStore = spyOn(AsyncLocalStorage.prototype, "getStore");
+      try {
+        fireMockVaultEvent("modify", note("Other/a.md"));
+        fireMockVaultEvent("create", note("Private/b.md"));
+        fireMockVaultEvent("delete", note("Other/c.md"));
+        expect(pending()).toBeGreaterThan(0);
+        expect(getStore).toHaveBeenCalledTimes(0);
+      } finally {
+        getStore.mockRestore();
+      }
+    });
   });
 });

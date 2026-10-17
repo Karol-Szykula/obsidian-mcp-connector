@@ -67,6 +67,15 @@ search results is not an access control.**
   Consistent with the bundle, which leaves `require("node:http")`, `require("node:crypto")` and
   friends as literals in the shipped `main.js`.
 
+  _Amendment, 2026-10-16._ That measurement was taken in August, before Obsidian 1.14.4 moved the
+  renderer to Electron 43, and it shows that the API resolves and keeps its store across async
+  boundaries, not that every call is safe. One external report (PR #616) attributes a Windows
+  renderer crash on Electron 43 to a `getStore()` call inside a keyboard-initiated vault event,
+  found by bisecting builds, with the mechanism not traced. **It is unreproduced and unverified
+  here**, and it may be unrelated to the blank window in #597 and #609. The change described under
+  D11 narrows `AsyncLocalStorage` to request paths on correctness grounds and leaves the
+  availability question open.
+
 ### Prior art in this repository
 
 **RFC #238 offered this and deferred it.** Its option B was a plugin-specific `excludeFolders`
@@ -221,6 +230,27 @@ in `promptRegistry.dispatch`; the facade reads the current store synchronously.
 invisible today and lands exactly when phase 2 ships: two tokens interleaving at an `await` read
 each other's policy. Availability was the one open risk in the plan and it is measured (see
 Context).
+
+_Amendment, 2026-10-16: code that is not serving a request reads `vaultWide`, explicitly._
+`current()` is for request paths. Outside a scope it falls back to the vault-wide policy, which
+hides a stray call today and turns it into a cross-client leak the day policies differ per token.
+Three consumers run outside a request, and each feeds state shared by every client:
+
+- the semantic indexer's `isExcluded` (vault events, the `onLayoutReady` rebuild, work deferred
+  past a tool call), which writes the shared embedding store;
+- the prompts list-changed baseline taken at plugin load;
+- the debounced rescan the prompts vault watcher arms.
+
+The prompts pair reads through a second guarded `App` built on `vaultWide`, so the `isGuardedApp`
+tripwire of D1 still holds for it. Every other reader keeps `current()`: the tool registry's
+guarded `App`, and the search provider guard, which is invoked per operation inside `search()`.
+`tools/list`, `resources/list` and `resources/read` perform no policy read, so they need no
+scope. **A new dispatch point gets its own `runWith`, not a `vaultWide` read.** The settings-UI
+chooser re-run stays on `current()`: it is a direct user action, neither load nor a vault event.
+
+Known and left for a later change: the prompts list memo is filled under a request scope and
+shared by every caller, so under per-token policies it would serve one token's filtered list to
+another.
 
 **D12 — Consent is a version, gated once, and never disables the protection.**
 `excludedFoldersConsent: { version: number; acceptedAt: string }`. A boolean cannot express "you

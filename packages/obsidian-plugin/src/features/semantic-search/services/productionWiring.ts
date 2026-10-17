@@ -111,21 +111,25 @@ export async function wireSemanticSearch(
   // `app.metadataCache` is in scope, and injected into every indexer
   // below.
   //
-  // The indexer is the one policy consumer that runs outside a request
-  // scope, so it reads the vault-wide policy — which starts at deny-all
-  // until the first successful settings read (ADR-0020 §D7). For a read
-  // that posture is a safe refusal; for the index it would be a silent
-  // wipe, every file skipped and the store rebuilt empty. This one
-  // resolving read, before any indexer exists, is what keeps fail-closed
-  // from meaning fail-destructive. A *later* read failure is harmless:
-  // the provider retains the last policy it resolved.
+  // The indexer runs outside a request scope (vault events, the
+  // onLayoutReady rebuild, work deferred past a tool call), so it reads the
+  // vault-wide policy explicitly. A shared embedding store must never
+  // inherit one client's exclusions, and `vaultWide` does not touch
+  // AsyncLocalStorage. That policy starts at deny-all until the first
+  // successful settings read (ADR-0020 §D7). For a read that posture is a
+  // safe refusal; for the index it would be a silent wipe, every file
+  // skipped and the store rebuilt empty. This one resolving read, before
+  // any indexer exists, is what keeps fail-closed from meaning
+  // fail-destructive, and now the only thing that does: no request scope
+  // can mask a failed refresh. A *later* read failure is harmless: the
+  // provider retains the last policy it resolved.
   const policyProvider = pathPolicyFor(plugin);
   await policyProvider.refresh();
   const isUserIgnored = createExclusionFilter(plugin.app);
   // Read per call, never captured: the list can change between two files
   // of the same rebuild.
   const ssIsExcluded = (path: string): boolean =>
-    isUserIgnored(path) || policyProvider.current().isExcluded(path);
+    isUserIgnored(path) || policyProvider.vaultWide.isExcluded(path);
 
   const ssExcerpt: ExcerptResolver = async (path, offset, maxLen) => {
     const f = plugin.app.vault.getAbstractFileByPath(path);
