@@ -31,9 +31,9 @@ Think before you post. Ask yourself:
 ## Development Setup
 
 1. **Prerequisites**:
-   - [Bun](https://bun.sh/) v1.1.42 or higher
-   - [Obsidian](https://obsidian.md/) v1.7.7 or higher
-   - [Claude Desktop](https://claude.ai/download) for testing
+   - [Bun](https://bun.sh/) v1.4.2 (the version the release workflow pins; another version builds, but `main.js` can differ byte for byte)
+   - [Obsidian](https://obsidian.md/) v1.7.2 or higher (`minAppVersion` in `manifest.json`)
+   - An MCP client for testing, such as [Claude Desktop](https://claude.ai/download), Claude Code or Codex
 
 2. **Clone and Setup**:
    ```bash
@@ -54,7 +54,6 @@ Think before you post. Ask yourself:
 ### Documentation Resources
 - **Project architecture**: `/docs/project-architecture.md`
 - **Feature documentation**: `/docs/features/`
-- **Coding standards**: `.clinerules`
 
 ### Monorepo Structure
 ```
@@ -68,7 +67,7 @@ packages/
 - Self-contained modules in `src/features/` with standardized structure
 - Each feature exports a setup function for initialization
 - Use ArkType for runtime type validation
-- Follow patterns documented in `.clinerules`
+- Follow the feature structure in `/docs/project-architecture.md`
 
 ## Contributing Guidelines
 
@@ -112,7 +111,7 @@ packages/
 - **ArkType validation** for all external data
 - **Error handling** with descriptive messages
 - **Documentation** for public APIs
-- **Follow existing patterns** in `.clinerules`
+- **Follow existing patterns** in `/docs/project-architecture.md` and the neighbouring feature code
 
 ## Release Process (Maintainers Only)
 
@@ -192,7 +191,7 @@ bun test
 
 ### Binary Security
 
-These notes apply to the legacy 0.3.x binary line. The current 0.4.x line ships no standalone binary — the only artifact is the plugin bundle (main.js), attested at release.
+These notes apply to the legacy 0.3.x binary line. The current 3.x line ships no standalone binary — the only artifact is the plugin bundle (main.js), attested at release.
 
 - All binaries are SLSA-attested and cryptographically signed
 - Use `gh attestation verify --owner istefox <binary>` to verify integrity
