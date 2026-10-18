@@ -161,6 +161,17 @@ variable `RELEASE_APP_CLIENT_ID`; environments `release-prepare` (no reviewers) 
 (required reviewer, "Prevent self-review" off), both limited to the `main` branch; a tag ruleset on
 `refs/tags/*` (`creation`, `update`, `non_fast_forward`) with the App as its only bypass actor.
 
+### Alpha pre-releases
+
+An alpha goes to testers who install through [BRAT](https://github.com/TfTHacker/obsidian42-brat),
+never to the store. Run the workflow **Release alpha** from `main` with `base_version` (the version
+the alpha leads up to, higher than the stable one, for example `3.1.0`) and `alpha_number`. It
+validates the version, waits for your approval in the `release` environment, then tags a commit that
+carries `X.Y.Z-alpha.N` in `package.json` and `manifest.json`. `main` does not change, so the store,
+which reads the version from `manifest.json` on `main`, never sees it, and `release.yml` publishes
+the tag as a prerelease. The base must be higher than the stable version: `3.0.3-alpha.1` sorts
+before `3.0.3`. See ADR-0030, "Amendment: alpha pre-releases".
+
 ### Maintainer Responsibilities
 - **Code review**: Review PRs for quality, security, and architecture compliance
 - **Issue triage**: Respond to issues and help users (when possible)

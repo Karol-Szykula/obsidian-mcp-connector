@@ -145,6 +145,32 @@ not mention the identity.
 
 ---
 
+## Amendment (2026-10-18): alpha pre-releases
+
+Consequences listed hand-cut prereleases as blocked: the tag ruleset allows only the App to create a
+tag, and `bump()` cannot bump from a prerelease. Testers still need a build that the store does not
+offer to everyone, so a third workflow, `release-alpha.yml`, cuts one.
+
+- **How the store stays out.** Obsidian reads the plugin version from `manifest.json` on the default
+  branch and downloads the release whose tag equals it
+  ([docs](https://docs.obsidian.md/plugins/releasing/submit-plugin)). The workflow never changes
+  `main`. It commits `package.json` and `manifest.json` with the alpha version on a detached commit
+  and pushes only the tag. `release.yml` already marks a tag with a hyphen as a prerelease, which
+  keeps it out of `/releases/latest`. BRAT installs from the release, so testers get the alpha.
+  `versions.json` is not touched, because the store reads it from `main`.
+- **Same gate as a stable release.** A `check` job validates the version and the free tag with no
+  environment; a `tag` job waits on the `release` environment, mints the App token after the
+  approval and refuses if `main` moved meanwhile (the D5 rule). Both jobs refuse a dispatch from
+  any ref but `main`. Inputs reach the shell through `env`, never through `${{ }}`.
+- **The base version must be higher than the stable one.** Under SemVer `3.0.3-alpha.1` sorts before
+  `3.0.3`, so a client that compares versions would call it a downgrade. `scripts/alpha.ts` refuses
+  such a base. The rules are pure functions with tests in `scripts/alpha.test.ts`.
+- **What is not proven.** The workflow has never run. That the App's tag push of a commit outside
+  `main` passes the ruleset, and that BRAT offers the alpha over an installed stable release, are
+  checked on the first alpha.
+
+---
+
 ## Alternatives considered
 
 ### A1: `GITHUB_TOKEN` for phase one, an App only for the tag (rejected)
