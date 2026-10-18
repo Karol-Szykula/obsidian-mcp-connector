@@ -410,10 +410,16 @@ async function stdioChecks(
       outcomes.every((o) => o.includes('"isError"') || o.includes('"error"')),
       outcomes,
     );
+    // The tool's own host check now catches every spelling above, so the
+    // network layer needs an address that check does not know: shared
+    // address space (100.64.0.0/10) is refused only when connecting.
+    const cgnat = await client.tool("fetch", {
+      url: `http://100.64.0.1:${page.port}/page`,
+    });
     check(
-      "stdio: the network layer, not only the tool's own check, refused some",
-      outcomes.some((o) => o.includes("Refusing to connect")),
-      outcomes,
+      "stdio: the network layer refuses an address the tool's own check lets through",
+      cgnat.includes("Refusing to connect"),
+      cgnat,
     );
     check(
       "stdio: no refused fetch reached the local server",
