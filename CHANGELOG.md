@@ -5,6 +5,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), version
 
 ## [Unreleased]
 
+### Added
+
+- **Headless mode serves the vault tools from a folder, without Obsidian.** `obsidian-mcp-headless` is a standalone Node 24.11+ server, one file attached to each release. It speaks stdio by default and HTTP with `--http`, and offers semantic search unless you pass `--no-semantic`. It reads the vault's Excluded files and periodic-note settings, and the desktop plugin is unchanged. See [Headless mode](README.md#headless-mode)
+
 ### Changed
 
 - **Plugin load evaluates less.** Transformers.js and onnxruntime-web are now loaded the first time semantic search needs them, not while the plugin loads. Measured on a build of 3.0.3: about 13 ms and 5 MB of heap less before `onload`. Nothing changes for semantic search itself
