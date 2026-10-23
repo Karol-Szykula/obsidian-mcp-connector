@@ -431,29 +431,27 @@ export async function createMcpService(
         // this call's relatedRequestId and is flushed on the POST response
         // stream (which is SSE for activate_tool — see below).
         const policy = await pathPolicy.refresh();
-        const result = await pathPolicy.runWith(policy, () =>
-          registry.dispatch(request.params, {
-            server,
-            sendNotification: ctx.mcpReq.notify,
-            scope,
-            refusedTools: refusedToolsFor(policy),
-            // Read off the SAME per-request ctx that already supplies
-            // `notify` above, from the envelope the SDK lifts for the modern
-            // era (R-09, ADR-0023 D9). A legacy-classified request never
-            // reaches this leg with an envelope, so this stays `undefined`
-            // there — which the search tools read as "no signal" and keep
-            // attaching on, not as "no support".
-            //
-            // View switched off for this caller (discussion #543): force the
-            // signal to the one value the search tools already treat as
-            // "withhold the payload", on both eras. Reusing that branch
-            // instead of adding a second flag keeps a single withholding
-            // path for the tools to get right.
-            hasUiCapability: searchResultsView
-              ? declaresUiExtension(ctx.mcpReq.envelope)
-              : false,
-          }),
-        );
+        const result = await registry.dispatch(request.params, {
+          server,
+          sendNotification: ctx.mcpReq.notify,
+          scope,
+          refusedTools: refusedToolsFor(policy),
+          // Read off the SAME per-request ctx that already supplies
+          // `notify` above, from the envelope the SDK lifts for the modern
+          // era (R-09, ADR-0023 D9). A legacy-classified request never
+          // reaches this leg with an envelope, so this stays `undefined`
+          // there — which the search tools read as "no signal" and keep
+          // attaching on, not as "no support".
+          //
+          // View switched off for this caller (discussion #543): force the
+          // signal to the one value the search tools already treat as
+          // "withhold the payload", on both eras. Reusing that branch
+          // instead of adding a second flag keeps a single withholding
+          // path for the tools to get right.
+          hasUiCapability: searchResultsView
+            ? declaresUiExtension(ctx.mcpReq.envelope)
+            : false,
+        });
         // Record the call for frequency-based promotion (meta-tools and
         // adaptive-inactive calls are excluded — the latter did not
         // execute, see ADR-0011).
@@ -488,19 +486,17 @@ export async function createMcpService(
       }
     });
     // The prompts registry never goes through toolRegistry.dispatch, so
-    // it establishes its own policy scope. `expandEmbeds` transcludes
+    // it refreshes the policy itself. `expandEmbeds` transcludes
     // arbitrary `![[...]]` targets vault-wide and would otherwise read
     // straight past an exclusion (ADR-0020 §D1).
-    server.server.setRequestHandler("prompts/list", async () =>
-      pathPolicy.runWith(await pathPolicy.refresh(), () =>
-        promptRegistry.list(),
-      ),
-    );
-    server.server.setRequestHandler("prompts/get", async (req) =>
-      pathPolicy.runWith(await pathPolicy.refresh(), () =>
-        promptRegistry.dispatch(req.params),
-      ),
-    );
+    server.server.setRequestHandler("prompts/list", async () => {
+      await pathPolicy.refresh();
+      return promptRegistry.list();
+    });
+    server.server.setRequestHandler("prompts/get", async (req) => {
+      await pathPolicy.refresh();
+      return promptRegistry.dispatch(req.params);
+    });
     // Declaring `resources` above makes the SDK register all three
     // resource handlers and installs its own resources/templates/list,
     // answering an empty template list (ADR-0018 §"What the installed

@@ -257,6 +257,36 @@ Known and left for a later change: the prompts list memo is filled under a reque
 shared by every caller, so under per-token policies it would serve one token's filtered list to
 another.
 
+_Amendment, 2026-10-23: the request scope is no longer `AsyncLocalStorage`; phase 2 passes the
+policy explicitly._ Phase 1 has one vault-wide list, so the store only ever held the value
+`vaultWide` already holds, and it put a `node:async_hooks` read on every tool and prompt request
+inside Obsidian's renderer. Those reads are the strongest lead on the Electron 43 blank window
+(#597, #609): moving the background reads off the store (the amendment above) cut it from about
+1 in 10 loads to about 1 in 100 on one Mac, and Electron 43.8.3 (Obsidian 1.14.5) did not fix it:
+3.0.3 crashed on the first reload, with the renderer faulting on a null read near Node's async-hooks
+code. The mechanism is still not traced. What changes:
+
+- `PathPolicyProvider` drops `runWith` and the store. `current()` returns the vault-wide policy and
+  stays a separate entry point from `vaultWide`, so request paths remain findable: each
+  `current()` caller is a site phase 2 must visit.
+- The two dispatch points refresh the policy and call the handler directly. `tools/call` still
+  derives `refusedTools` from the policy it refreshed.
+- A request no longer holds one snapshot of the list. When a concurrent request refreshes after the
+  user edits the list, the rest of this request sees the edit. Either way the list in force is one
+  the user saved, so a request can only follow an edit sooner than before, never fall back to an
+  older list.
+- A test fails if any runtime source outside `src/headless` imports `async_hooks`. Headless runs in
+  plain Node and keeps its own store for rename warnings.
+- The prompts list memo (left above for later, #624) is keyed by what the policy excludes, so it is
+  correct whatever phase 2 does.
+
+The rule against a mutable module-level "current policy" stands. Phase 2 resolves the token's policy
+at the dispatch point and hands it down as a value: a `policy` on the tool context next to
+`refusedTools`, and a guarded `App` built per request from it instead of the one built at
+composition. This is more than the one line §D11 promised, and it is the price of not depending on
+`AsyncLocalStorage` in the renderer. Re-adopting a store needs a measurement on the Electron version
+Obsidian ships at that time.
+
 **D12 — Consent is a version, gated once, and never disables the protection.**
 `excludedFoldersConsent: { version: number; acceptedAt: string }`. A boolean cannot express "you
 agreed, but to an older set of terms"; the modal enumerates specific consequences, and if a later
@@ -489,7 +519,8 @@ case typo surfaces as an entry that resolves to nothing.
   deleted, removing a second copy of logic that had already drifted from the shared one.
 - Four duplicated folder-prefix matchers collapse to one shared helper for the two safe callers.
 - Phase 2 per-token needs one line at the policy resolution point, because §D11 puts the policy in
-  request scope from day one.
+  request scope from day one. _(No longer true since the 2026-10-23 amendment of §D11: phase 2
+  passes the policy down explicitly.)_
 - The facade's default-deny gives the codebase a mechanical answer to "does this new Obsidian API
   need guarding", in the form of a failing test that names the member.
 

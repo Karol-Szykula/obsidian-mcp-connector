@@ -1,22 +1,19 @@
 /**
- * Resolves and carries the folder-exclusion policy for one request
- * (ADR-0020 §D7, §D11).
+ * Resolves the folder-exclusion policy (ADR-0020 §D7, §D11).
  *
- * Two jobs that belong together:
+ * Read `mcpTools.excludedFolders` and compile it, with a fail-closed
+ * posture that inverts this project's usual fail-open default
+ * (ADR-0014 §1) for reasons §D7 spells out.
  *
- * 1. **Resolution.** Read `mcpTools.excludedFolders` and compile it,
- *    with a fail-closed posture that inverts this project's usual
- *    fail-open default (ADR-0014 §1) for reasons §D7 spells out.
- * 2. **Request scope.** Carry the resolved policy across `await`s via
- *    `AsyncLocalStorage`, so the guarded `App` — built once at
- *    composition and closing over nothing — can read the policy in force
- *    for the call it is currently serving.
- *
- * `AsyncLocalStorage` was verified against Obsidian's renderer on
- * 2026-08-19 before this was written: `node:async_hooks` resolves, and a
- * store survives both a `setTimeout` and a promise continuation.
+ * Until 3.1.0 this class also carried the policy across `await`s in an
+ * `AsyncLocalStorage` store, so a future per-token policy (phase 2) could
+ * reach the guarded `App` without changing its signature. Phase 1 has one
+ * vault-wide list, so that store only ever held the value
+ * {@link PathPolicyProvider.vaultWide} already holds, and every read of it
+ * went through `node:async_hooks` inside Obsidian's renderer, the
+ * strongest lead on the Electron 43 blank window (#597, #609). It is gone; see the ADR-0020 §D11
+ * amendment of 2026-10-23 for how phase 2 passes the policy instead.
  */
-import { AsyncLocalStorage } from "node:async_hooks";
 import {
   DENY_ALL_POLICY,
   compilePolicy,
@@ -31,16 +28,14 @@ const SLICE = "mcpTools";
 const FIELD = "excludedFolders";
 
 /**
- * Resolves the vault-wide policy and scopes it to a request.
+ * Resolves the vault-wide policy.
  *
- * One instance per plugin load. It is deliberately NOT a module-level
- * mutable "current policy": phase 2 makes the policy per token, and a
- * module global would have two tokens interleaving at an `await` read
- * each other's policy — a bug invisible today and shipped exactly when
- * per-token support lands.
+ * One instance per plugin load. The policy it holds is vault-wide by
+ * definition; phase 2 must not turn it into a per-token "current policy",
+ * because two tokens interleaving at an `await` would read each other's
+ * (ADR-0020 §D11).
  */
 export class PathPolicyProvider {
-  private readonly storage = new AsyncLocalStorage<PathPolicy>();
   private readonly store: SettingsStore;
 
   /**
@@ -105,8 +100,8 @@ export class PathPolicyProvider {
    *
    * What code that is not serving a request reads: the semantic indexer
    * and the prompts list-changed baseline. Both feed state shared by every
-   * client, so neither may inherit the policy of whichever request happens
-   * to be in flight, and neither touches `AsyncLocalStorage`.
+   * client, so neither may inherit a request's policy once phase 2 lets
+   * those differ.
    */
   get vaultWide(): PathPolicy {
     return this.vaultWidePolicy;
@@ -118,31 +113,18 @@ export class PathPolicyProvider {
   }
 
   /**
-   * Run `fn` with `policy` in force for everything it awaits.
+   * The policy for the request being served.
    *
-   * Entered once per request, at the two dispatch points. Nested calls
-   * are legal and the innermost wins, which is what makes it safe for a
-   * tool to invoke another tool's handler.
-   */
-  runWith<T>(policy: PathPolicy, fn: () => T): T {
-    return this.storage.run(policy, fn);
-  }
-
-  /**
-   * The policy in force right now.
-   *
-   * For request paths only. Inside `runWith`, that request's policy.
-   * Outside it — the settings UI, a unit test — the vault-wide policy,
-   * never "no policy". Phase 2 keeps this rule: an absent request scope
-   * means the vault-wide list still applies, because that list is the
-   * user's statement about the vault rather than about any one client.
-   *
-   * A background task (a vault event handler, a timer, plugin load) reads
-   * {@link vaultWide} instead: the fallback above makes a stray call here
-   * harmless today, and a bug the day a request's policy differs.
+   * Today the vault-wide policy, the same value {@link vaultWide} returns.
+   * It stays a separate entry point so request paths and background tasks
+   * remain distinguishable: phase 2 resolves a token's policy at the
+   * dispatch point and hands it to the request explicitly (ADR-0020 §D11),
+   * and every `current()` caller is a site that change has to visit. A
+   * background task (a vault event handler, a timer, plugin load) reads
+   * {@link vaultWide}.
    */
   current(): PathPolicy {
-    return this.storage.getStore() ?? this.vaultWidePolicy;
+    return this.vaultWidePolicy;
   }
 }
 
