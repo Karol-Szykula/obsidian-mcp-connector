@@ -181,9 +181,8 @@ export default class McpToolsPlugin extends Plugin {
       // guarded App has to be installed. `expandEmbeds` transcludes
       // arbitrary `![[...]]` targets vault-wide and would otherwise read
       // straight through an exclusion.
-      const promptsApp = createGuardedApp(this.app, () =>
-        pathPolicyFor(this).current(),
-      );
+      const promptsPolicy = () => pathPolicyFor(this).current();
+      const promptsApp = createGuardedApp(this.app, promptsPolicy);
       if (!isGuardedApp(promptsApp)) {
         throw new Error(
           "onload: refusing to wire prompts against an unguarded App (ADR-0020 D1).",
@@ -191,7 +190,7 @@ export default class McpToolsPlugin extends Plugin {
       }
       // The list-changed baseline runs at load and on vault events, never
       // inside a request, so it reads the vault-wide policy explicitly
-      // (ADR-0020 D11) instead of the request-scoped one above.
+      // (ADR-0020 D11) instead of the request-path one above.
       const promptsVaultWideApp = createGuardedApp(
         this.app,
         () => pathPolicyFor(this).vaultWide,
@@ -206,6 +205,8 @@ export default class McpToolsPlugin extends Plugin {
         promptsApp,
         {
           vaultWideApp: promptsVaultWideApp,
+          // #624: the list memo is keyed by the policy promptsApp resolves.
+          policySource: promptsPolicy,
           // ADR-0017: the prompts feature decides WHEN the list changed, the
           // transport owns HOW it is published. Wiring it here rather than
           // inside the transport keeps the vault-watching in the feature

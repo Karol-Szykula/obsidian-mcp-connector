@@ -1,7 +1,8 @@
+import { Glob } from "bun";
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import { PathPolicyProvider } from "./policyProvider";
 import type { PluginDataLike } from "./types";
-import { compilePolicy } from "./pathPolicy";
 
 /**
  * In-memory plugin data, with a switch to make `loadData` throw so the
@@ -151,77 +152,43 @@ describe("PathPolicyProvider — fail-closed posture (ADR-0020 D7)", () => {
   });
 });
 
-describe("PathPolicyProvider — request scope", () => {
-  test("current() outside a scope is the vault-wide policy, never inert", async () => {
+describe("PathPolicyProvider — current()", () => {
+  test("current() is the vault-wide policy, never inert", async () => {
     const { plugin } = makePlugin(withFolders(["Therapy"]));
     const provider = new PathPolicyProvider(plugin);
     await provider.refresh();
     expect(provider.current().folders).toEqual(["Therapy"]);
     expect(provider.current().isExcluded("Therapy/a.md")).toBe(true);
+    expect(provider.current()).toBe(provider.vaultWide);
   });
 
-  test("current() inside a scope is that request's policy", async () => {
-    const { plugin } = makePlugin(withFolders(["Therapy"]));
-    const provider = new PathPolicyProvider(plugin);
+  test("current() follows a refresh across awaits", async () => {
+    const fixture = makePlugin(withFolders(["Therapy"]));
+    const provider = new PathPolicyProvider(fixture.plugin);
     await provider.refresh();
-
-    const scoped = compilePolicy(["Finances"]);
-    provider.runWith(scoped, () => {
-      expect(provider.current().folders).toEqual(["Finances"]);
-    });
-    expect(provider.current().folders).toEqual(["Therapy"]);
-  });
-
-  // The property the whole design rests on. A tool handler awaits many
-  // times before it touches the vault; if the store did not survive
-  // those, the facade would read the wrong policy.
-  test("the policy survives awaits inside the scope", async () => {
-    const { plugin } = makePlugin({});
-    const provider = new PathPolicyProvider(plugin);
-    const scoped = compilePolicy(["Therapy"]);
-
-    const seen = await provider.runWith(scoped, async () => {
-      await new Promise((r) => setTimeout(r, 5));
-      await Promise.resolve();
-      return provider.current().folders.slice();
-    });
-    expect(seen).toEqual(["Therapy"]);
-  });
-
-  test("concurrent scopes do not see each other's policy", async () => {
-    const { plugin } = makePlugin({});
-    const provider = new PathPolicyProvider(plugin);
-
-    const run = (folder: string, delay: number) =>
-      provider.runWith(compilePolicy([folder]), async () => {
-        await new Promise((r) => setTimeout(r, delay));
-        return provider.current().folders[0];
-      });
-
-    // Interleaved on purpose: the first to start finishes last.
-    const [a, b] = await Promise.all([run("Therapy", 20), run("Finances", 1)]);
-    expect(a).toBe("Therapy");
-    expect(b).toBe("Finances");
-  });
-
-  test("a nested scope wins, and the outer one is restored", async () => {
-    const { plugin } = makePlugin({});
-    const provider = new PathPolicyProvider(plugin);
-
-    provider.runWith(compilePolicy(["Outer"]), () => {
-      expect(provider.current().folders).toEqual(["Outer"]);
-      provider.runWith(compilePolicy(["Inner"]), () => {
-        expect(provider.current().folders).toEqual(["Inner"]);
-      });
-      expect(provider.current().folders).toEqual(["Outer"]);
-    });
-  });
-
-  test("a scope does not leak into the vault-wide policy", async () => {
-    const { plugin } = makePlugin(withFolders(["Therapy"]));
-    const provider = new PathPolicyProvider(plugin);
+    fixture.setFolders(["Finances"]);
+    await new Promise((r) => setTimeout(r, 5));
     await provider.refresh();
-    provider.runWith(compilePolicy(["Finances"]), () => {});
-    expect(provider.vaultWide.folders).toEqual(["Therapy"]);
+    expect(provider.current().folders).toEqual(["Finances"]);
+  });
+});
+
+/**
+ * #597, #609: reads of an `AsyncLocalStorage` store are the strongest lead
+ * on the Electron 43 blank window, and a phase-1 policy never needed one
+ * (ADR-0020 §D11, amendment of 2026-10-23). Nothing the desktop bundle
+ * ships may import `node:async_hooks` again. Headless runs in plain Node
+ * and is excluded.
+ */
+describe("desktop bundle stays off node:async_hooks", () => {
+  test("no runtime source outside src/headless imports it", async () => {
+    const root = join(import.meta.dir, "..");
+    const offenders: string[] = [];
+    for await (const rel of new Glob("**/*.{ts,svelte}").scan(root)) {
+      if (rel.startsWith("headless/") || rel.includes(".test.")) continue;
+      const text = await Bun.file(join(root, rel)).text();
+      if (/["'](node:)?async_hooks["']/.test(text)) offenders.push(rel);
+    }
+    expect(offenders).toEqual([]);
   });
 });

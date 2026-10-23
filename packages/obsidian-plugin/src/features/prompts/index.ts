@@ -2,6 +2,7 @@ import { TFile, type App } from "obsidian";
 import { ProtocolError, ProtocolErrorCode } from "@modelcontextprotocol/server";
 import { PromptFrontmatterSchema } from "shared";
 import { logger } from "$/shared/logger";
+import type { PathPolicy } from "$/shared/pathPolicy";
 import type {
   PromptListEntry,
   PromptRegistry,
@@ -61,6 +62,15 @@ export type PromptsSetupOptions = {
    */
   vaultWideApp?: App;
   /**
+   * The policy `app` resolves, read when `prompts/list` is answered. The
+   * list memo is keyed by it, so a list computed under one excluded-folder
+   * list is never served under another: after the user edits the list, or,
+   * once ADR-0020 phase 2 makes the policy per token, to a different
+   * token (#624). Without it the memo is keyed by prompt-file changes
+   * only, which is right only for a test whose policy never changes.
+   */
+  policySource?: () => PathPolicy;
+  /**
    * Override {@link NOTIFY_DEBOUNCE_MS}. Same escape hatch as the semantic
    * indexer's `debounceMs` (`semantic-search/services/indexer.ts`): tests
    * need the comparison to run promptly, and half a second per assertion
@@ -68,6 +78,14 @@ export type PromptsSetupOptions = {
    */
   debounceMs?: number;
 };
+
+/**
+ * What a policy excludes, as a memo key. `isEmpty` is part of it because
+ * the deny-all policy and the empty one both name no folder.
+ */
+function policyKey(policy: PathPolicy): string {
+  return `${policy.isEmpty ? "open" : "filtered"}:${policy.folders.join("\0")}`;
+}
 
 export async function setup(
   promptRegistry: PromptRegistry,
@@ -80,6 +98,7 @@ export async function setup(
   const {
     notifyPromptsChanged,
     vaultWideApp = app,
+    policySource,
     debounceMs = NOTIFY_DEBOUNCE_MS,
   } = options;
   try {
@@ -88,13 +107,22 @@ export async function setup(
     // below invalidates on create/delete/rename/modify under Prompts/.
     // The epoch guard prevents caching a scan that raced an
     // invalidation (event fired while discoverPrompts was running).
+    // The policy key keeps a list filtered under one excluded-folder
+    // list from being served under another (#624).
     let epoch = 0;
-    let cached: { epoch: number; list: PromptListEntry[] } | null = null;
+    let cached: {
+      epoch: number;
+      policy: string;
+      list: PromptListEntry[];
+    } | null = null;
     promptRegistry.setLister(async () => {
-      if (cached && cached.epoch === epoch) return cached.list;
+      const policy = policySource ? policyKey(policySource()) : "";
+      if (cached && cached.epoch === epoch && cached.policy === policy) {
+        return cached.list;
+      }
       const startEpoch = epoch;
       const list = await discoverPrompts(app);
-      if (epoch === startEpoch) cached = { epoch: startEpoch, list };
+      if (epoch === startEpoch) cached = { epoch: startEpoch, policy, list };
       return list;
     });
 

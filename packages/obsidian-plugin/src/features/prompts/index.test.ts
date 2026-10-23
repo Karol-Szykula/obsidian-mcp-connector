@@ -11,7 +11,7 @@ import {
 } from "$/test-setup";
 import { PromptRegistryClass } from "$/features/mcp-transport/services/promptRegistry";
 import { createGuardedApp } from "$/shared/guardedApp";
-import { compilePolicy, EMPTY_POLICY } from "$/shared/pathPolicy";
+import { compilePolicy, type PathPolicy } from "$/shared/pathPolicy";
 import { pathPolicyFor } from "$/shared/policyProvider";
 import { setup, teardown } from "./index";
 
@@ -552,13 +552,10 @@ describe("prompts list vs the metadata indexing window", () => {
 /**
  * ADR-0020 D11: the list-changed baseline and its debounced rescan run at
  * plugin load and on vault events, never inside a request. They read the
- * vault-wide policy through `vaultWideApp` and must not touch
- * `AsyncLocalStorage`, or they would inherit the policy of whichever
- * request happened to be in flight. `current()` falls back to the vault-wide
- * policy outside a scope, so only a spy on `getStore` and a scope opened on
- * purpose can tell the two reads apart.
+ * vault-wide policy through `vaultWideApp`, and nothing on that path may
+ * touch `AsyncLocalStorage` (#597, #609).
  */
-describe("prompts background reads stay off the request scope", () => {
+describe("prompts background reads use the vault-wide policy", () => {
   const DEBOUNCE = 5;
   const settle = () => new Promise((r) => setTimeout(r, DEBOUNCE + 40));
 
@@ -580,7 +577,7 @@ describe("prompts background reads stay off the request scope", () => {
     return provider;
   }
 
-  /** The two Apps main.ts builds: request-scoped and vault-wide. */
+  /** The two Apps main.ts builds: request path and vault-wide. */
   function appsFor(provider: Awaited<ReturnType<typeof providerExcluding>>) {
     return {
       app: createGuardedApp(mockApp(), () => provider.current()),
@@ -617,53 +614,6 @@ describe("prompts background reads stay off the request scope", () => {
     }
   });
 
-  test("a request-path read still resolves the request scope", async () => {
-    promptFile("Prompts/greet.md", "one");
-    const provider = await providerExcluding([]);
-    const { app, vaultWideApp } = appsFor(provider);
-    const registry = new PromptRegistryClass();
-    const result = await setup(registry, app, { vaultWideApp });
-    if (!result.success) throw new Error(result.error);
-    const getStore = spyOn(AsyncLocalStorage.prototype, "getStore");
-
-    try {
-      // The over-correction guard: moving the background reads must not
-      // have moved the lister off the request scope.
-      await provider.runWith(EMPTY_POLICY, () => registry.list());
-      expect(getStore.mock.calls.length).toBeGreaterThan(0);
-    } finally {
-      getStore.mockRestore();
-      teardown(result.state);
-    }
-  });
-
-  test("an event raised inside another request's scope decides the same", async () => {
-    // Every prompt lives under Prompts/, and the vault-wide list excludes
-    // it, so no prompt is visible to a list-changed comparison.
-    const provider = await providerExcluding(["Prompts"]);
-    const { app, vaultWideApp } = appsFor(provider);
-    const calls: number[] = [];
-    const result = await setup(new PromptRegistryClass(), app, {
-      vaultWideApp,
-      notifyPromptsChanged: () => calls.push(1),
-      debounceMs: DEBOUNCE,
-    });
-    if (!result.success) throw new Error(result.error);
-
-    // A request whose own policy excludes nothing is in flight when the
-    // vault event arrives. The debounce timer is armed inside its scope.
-    promptFile("Prompts/second.md", "two");
-    provider.runWith(EMPTY_POLICY, () =>
-      fireMockVaultEvent("create", { path: "Prompts/second.md" }),
-    );
-    await settle();
-
-    // Read through the request-scoped App, the rescan would see the new
-    // prompt and announce it to every client. Vault-wide, it sees nothing.
-    expect(calls).toHaveLength(0);
-    teardown(result.state);
-  });
-
   test("a vault-wide exclusion hides a prompt from the baseline", async () => {
     promptFile("Prompts/greet.md", "one");
     const provider = await providerExcluding(["Prompts"]);
@@ -682,5 +632,85 @@ describe("prompts background reads stay off the request scope", () => {
 
     expect(calls).toHaveLength(0);
     teardown(result.state);
+  });
+});
+
+/**
+ * #624: the prompts/list memo is keyed by the policy the request resolves.
+ * Before, a list filtered under one excluded-folder list was served under
+ * any other until a prompt file changed: after the user edited the list
+ * today, and to a different token once ADR-0020 phase 2 lands.
+ */
+describe("prompts list memo is keyed by policy", () => {
+  function promptFile(path: string): void {
+    setMockFile(path, "Body");
+    setMockMetadata(path, { frontmatter: { tags: ["mcp-tools-prompt"] } });
+  }
+
+  async function registryUnder(policy: { current: PathPolicy }) {
+    const registry = new PromptRegistryClass();
+    const source = () => policy.current;
+    const raw = mockApp();
+    const result = await setup(registry, createGuardedApp(raw, source), {
+      policySource: source,
+    });
+    if (!result.success) throw new Error(result.error);
+    return { registry, state: result.state, raw };
+  }
+
+  const names = async (registry: PromptRegistryClass) =>
+    (await registry.list()).prompts.map((p) => p.name).sort();
+
+  test("a list cached under no exclusion is not served once Prompts is excluded", async () => {
+    promptFile("Prompts/greet.md");
+    const policy = { current: compilePolicy([]) };
+    const { registry, state } = await registryUnder(policy);
+
+    expect(await names(registry)).toEqual(["greet"]);
+    policy.current = compilePolicy(["Prompts"]);
+    expect(await names(registry)).toEqual([]);
+    teardown(state);
+  });
+
+  test("a list cached under an exclusion is not served once it is lifted", async () => {
+    promptFile("Prompts/greet.md");
+    const policy = { current: compilePolicy(["Prompts"]) };
+    const { registry, state } = await registryUnder(policy);
+
+    expect(await names(registry)).toEqual([]);
+    policy.current = compilePolicy([]);
+    expect(await names(registry)).toEqual(["greet"]);
+    teardown(state);
+  });
+
+  test("two policies that interleave each see their own list", async () => {
+    promptFile("Prompts/greet.md");
+    const policy = { current: compilePolicy([]) };
+    const { registry, state } = await registryUnder(policy);
+
+    for (const folders of [[], ["Prompts"], [], ["Prompts"]]) {
+      policy.current = compilePolicy(folders);
+      expect(await names(registry)).toEqual(folders.length ? [] : ["greet"]);
+    }
+    teardown(state);
+  });
+
+  test("an unchanged policy is still served from the memo", async () => {
+    promptFile("Prompts/greet.md");
+    const policy = { current: compilePolicy(["Other"]) };
+    const { registry, state, raw } = await registryUnder(policy);
+    await registry.list();
+
+    // A fresh but equal policy object, as every refresh() compiles one.
+    // `discoverPrompts` calls `getMarkdownFiles` once per scan.
+    policy.current = compilePolicy(["Other"]);
+    const scan = spyOn(raw.vault, "getMarkdownFiles");
+    try {
+      expect(await names(registry)).toEqual(["greet"]);
+      expect(scan).toHaveBeenCalledTimes(0);
+    } finally {
+      scan.mockRestore();
+    }
+    teardown(state);
   });
 });

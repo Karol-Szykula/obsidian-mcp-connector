@@ -128,17 +128,16 @@ export async function wireSemanticSearch(
   // `app.metadataCache` is in scope, and injected into every indexer
   // below.
   //
-  // The indexer runs outside a request scope (vault events, the
-  // onLayoutReady rebuild, work deferred past a tool call), so it reads the
-  // vault-wide policy explicitly. A shared embedding store must never
-  // inherit one client's exclusions, and `vaultWide` does not touch
-  // AsyncLocalStorage. That policy starts at deny-all until the first
+  // The indexer runs outside a request (vault events, the onLayoutReady
+  // rebuild, work deferred past a tool call), so it reads the vault-wide
+  // policy explicitly. A shared embedding store must never inherit one
+  // client's exclusions. That policy starts at deny-all until the first
   // successful settings read (ADR-0020 §D7). For a read that posture is a
   // safe refusal; for the index it would be a silent wipe, every file
   // skipped and the store rebuilt empty. This one resolving read, before
   // any indexer exists, is what keeps fail-closed from meaning
-  // fail-destructive, and now the only thing that does: no request scope
-  // can mask a failed refresh. A *later* read failure is harmless: the
+  // fail-destructive, and the only thing that does: no request refresh
+  // runs before the indexer's first read. A *later* read failure is harmless: the
   // provider retains the last policy it resolved.
   const policyProvider = pathPolicyFor(plugin);
   await policyProvider.refresh();

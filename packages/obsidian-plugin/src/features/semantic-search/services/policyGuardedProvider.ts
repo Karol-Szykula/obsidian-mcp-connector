@@ -37,10 +37,9 @@ export type PolicySource = () => PathPolicy;
 /**
  * Wrap one provider so no hit under an excluded folder ever leaves it.
  *
- * The policy is read per `search()` call, never captured: the call runs
- * inside the request scope established at dispatch, which is what makes
- * phase 2's per-token policy a change of one line elsewhere and none
- * here.
+ * The policy is read per `search()` call, never captured: the
+ * excluded-folder list can change between two calls, and phase 2's
+ * per-token policy changes the source this reads, not this wrapper.
  *
  * Results are dropped, never replaced by a count or a placeholder. A
  * "3 results hidden" note would confirm the folder exists and would

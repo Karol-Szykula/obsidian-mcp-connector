@@ -738,24 +738,46 @@ test.each(["move", "reset"])(
 // Real broker, real vault transports
 // ---------------------------------------------------------------------------
 
+/**
+ * Ports this file has listened on or handed out. The OS can return a port
+ * it just released, so two calls in one test (a broker port, then a
+ * vault's transport port) could get the same number, and the broker would
+ * find its port taken by the vault (#637).
+ */
+const handedOut = new Set<number>();
+
 function listen(server: http.Server, port = 0): Promise<number> {
   return new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(port, "127.0.0.1", () =>
-      resolve((server.address() as { port: number }).port),
-    );
+    server.listen(port, "127.0.0.1", () => {
+      const bound = (server.address() as { port: number }).port;
+      handedOut.add(bound);
+      resolve(bound);
+    });
   });
 }
 
 /**
- * A port nothing listens on right now. Small TOCTOU window, the same
- * trade-off httpServer.test.ts and port.test.ts accept.
+ * A port nothing listens on right now and this file has not used. Small
+ * TOCTOU window against other processes, the same trade-off
+ * httpServer.test.ts and port.test.ts accept.
  */
+
 async function freePort(): Promise<number> {
-  const server = http.createServer();
-  const port = await listen(server);
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  return port;
+  for (;;) {
+    const server = http.createServer();
+    const port = await new Promise<number>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () =>
+        resolve((server.address() as { port: number }).port),
+      );
+    });
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    if (!handedOut.has(port)) {
+      handedOut.add(port);
+      return port;
+    }
+  }
 }
 
 type Vault = {

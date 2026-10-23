@@ -24,7 +24,6 @@ import {
   setMockFile,
   setMockFileStat,
 } from "$/test-setup";
-import { pathPolicyFor } from "$/shared/policyProvider";
 import { captureLogLines } from "$/shared/log/logCapture";
 
 /** In-memory adapter tracking text + binary files and remove() calls. */
@@ -336,9 +335,8 @@ describe("diagnostic log — semantic-search started", () => {
 /**
  * ADR-0020 D11: the indexer runs on vault events, the `onLayoutReady`
  * rebuild and work deferred past a tool call, none of them a request. It
- * reads the vault-wide policy explicitly. `current()` falls back to that
- * policy outside a scope, so only a scope opened on purpose, and a spy on
- * `getStore`, can tell the two reads apart.
+ * reads the vault-wide policy explicitly, and nothing on that path may
+ * touch `AsyncLocalStorage` (#597, #609).
  */
 describe("indexer policy source", () => {
   /** A wired plugin whose vault-wide policy excludes `Private`. */
@@ -368,21 +366,14 @@ describe("indexer policy source", () => {
 
   /** Wires, starts the indexer without a rebuild, and runs `body`. */
   async function withIndexer(
-    body: (ctx: {
-      pending: () => number;
-      runWith: (policy: typeof EMPTY_POLICY, fn: () => void) => void;
-    }) => void | Promise<void>,
+    body: (ctx: { pending: () => number }) => void | Promise<void>,
   ): Promise<void> {
     const plugin = wiringPlugin();
     const state = await wireSemanticSearch(plugin);
     if (!state?.indexer) throw new Error("semantic search was not wired");
     try {
       await state.indexer.start({ initialRebuild: false });
-      const provider = pathPolicyFor(plugin);
-      await body({
-        pending: () => state.indexer!.pending(),
-        runWith: (policy, fn) => provider.runWith(policy, fn),
-      });
+      await body({ pending: () => state.indexer!.pending() });
     } finally {
       await state.indexer.stop();
       await state.teardown();
@@ -394,25 +385,6 @@ describe("indexer policy source", () => {
       fireMockVaultEvent("modify", note("Private/a.md"));
       expect(pending()).toBe(0);
       fireMockVaultEvent("modify", note("Other/a.md"));
-      expect(pending()).toBe(1);
-    });
-  });
-
-  test("an unrelated request scope does not lift the exclusion", async () => {
-    await withIndexer(({ pending, runWith }) => {
-      // A request whose own policy excludes nothing is in flight.
-      runWith(EMPTY_POLICY, () =>
-        fireMockVaultEvent("modify", note("Private/a.md")),
-      );
-      expect(pending()).toBe(0);
-    });
-  });
-
-  test("an unrelated request scope does not add an exclusion", async () => {
-    await withIndexer(({ pending, runWith }) => {
-      runWith(compilePolicy(["Other"]), () =>
-        fireMockVaultEvent("modify", note("Other/a.md")),
-      );
       expect(pending()).toBe(1);
     });
   });
