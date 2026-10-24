@@ -44,9 +44,8 @@ export const TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
   append_to_active_file: SAFE_WRITE,
   patch_active_file: DESTRUCTIVE,
   delete_active_file: DESTRUCTIVE,
-  // Only changes which file the Obsidian UI shows. Accurate for the default
-  // call: a missing file is an error unless the caller opts into
-  // `createIfMissing`, the one argument that makes this tool write.
+  // Only changes which file the Obsidian UI shows. A missing file is an
+  // error; creating one goes through `create_vault_file` (#631).
   show_file_in_obsidian: { ...READ_ONLY, idempotentHint: true },
 
   // Vault files

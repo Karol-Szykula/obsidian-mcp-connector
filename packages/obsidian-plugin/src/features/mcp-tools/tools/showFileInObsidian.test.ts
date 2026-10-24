@@ -37,24 +37,31 @@ describe("show_file_in_obsidian tool", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/not found/i);
-    expect(result.content[0].text).toContain("createIfMissing");
+    expect(result.content[0].text).toContain("create_vault_file");
     // Nothing written, nothing opened.
     expect(app.vault.getAbstractFileByPath("NewNotes/scratch.md")).toBeNull();
     expect(app.workspace.getActiveFile()).toBeNull();
   });
 
-  test("creates and opens a missing file only when createIfMissing is true", async () => {
+  test("ignores a legacy createIfMissing argument and still writes nothing (#631)", async () => {
     const app = mockApp();
     const result = await showFileInObsidianHandler({
-      arguments: { filename: "NewNotes/scratch.md", createIfMissing: true },
+      arguments: {
+        filename: "NewNotes/scratch.md",
+        createIfMissing: true,
+      } as unknown as { filename: string },
       app,
     });
 
-    expect(result.isError).toBeUndefined();
-    expect(
-      app.vault.getAbstractFileByPath("NewNotes/scratch.md"),
-    ).not.toBeNull();
-    expect(app.workspace.getActiveFile()?.path).toBe("NewNotes/scratch.md");
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/not found/i);
+    expect(app.vault.getAbstractFileByPath("NewNotes/scratch.md")).toBeNull();
+    expect(app.workspace.getActiveFile()).toBeNull();
+  });
+
+  test("schema no longer advertises createIfMissing", () => {
+    const json = JSON.stringify(showFileInObsidianSchema.toJsonSchema());
+    expect(json).not.toContain("createIfMissing");
   });
 
   test("respects newLeaf=true argument", async () => {
