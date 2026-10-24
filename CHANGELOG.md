@@ -5,6 +5,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), version
 
 ## [Unreleased]
 
+## [3.2.0] — 2026-10-24
+
 ### Fixed
 
 - **Clients running in Docker or Podman can reach the vault through the broker URL.** The shared broker on port 27200 refused every request whose `Host` was not `127.0.0.1` or `localhost`, so a container calling `host.docker.internal:27200` got `403 untrusted request origin or host` and the client showed the server as unhealthy. The broker now also accepts `host.docker.internal` and `host.containers.internal` on client routes, with the same Origin and token checks. Registration and the health endpoint stay loopback-only. This needs Docker Desktop or Podman Desktop; Docker Engine on Linux is not covered (#640, ADR-0033)
