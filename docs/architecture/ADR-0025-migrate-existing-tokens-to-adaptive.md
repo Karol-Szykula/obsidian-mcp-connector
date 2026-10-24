@@ -527,3 +527,26 @@ flipping three toggles; nothing recovers a user who flipped one that meant three
 - `packages/obsidian-plugin/src/features/adaptive-tool-loading/components/AdaptiveToolLoadingSettings.svelte`
   — the existing profile writer the toggle joins
 - Issue #419 — the auto-promotion fan-out D10 reuses
+
+---
+
+## Amendment (2026-10-24, #625): a notice in Access Control
+
+The toggle shipped in the Tool Loading panel (D11), and few users found it: an `all` token still serves 64
+tools in about 62.9 KB of `tools/list` every session, against 16 tools in about 13.4 KB on `adaptive`, roughly
+12k tokens of client context for the same vault. Access Control now shows a notice above the token list for
+every token that the toggle would accept right now, with the same preview.
+
+- **Who is listed.** A token on `all`, past its observation window (D3, D4), not dismissed, whose migration
+  would deactivate at least one tool. Nothing is listed while the registry has no served names, or before the
+  `everCalledSince` anchor exists. The decision is a pure function, `services/migrationNotice.ts`, built on
+  `planMigration` (D8), so the notice, the confirmation and the write still share one computation.
+- **What it says.** Per token: how many tools it loads now and after, and the names that would go inactive.
+- **"Review and migrate" does not write.** It selects the token and asks the Tool Loading panel to run its own
+  toggle, flush and confirmation included. The panel stays the one writer of `profile`, so A8's objection
+  still holds, and A9 still holds too: one token per click, each with its own list.
+- **"Not now" hides it for that token.** The ids go in `toolLoading.migrationNoticeDismissed`, pruned with the
+  other per-token keys when a token is revoked and omitted from disk when empty. This is not the second flag D11
+  rejects: it never decides a profile, so there is nothing for it to agree with. A dismissed token can still be
+  migrated from the panel.
+- **When it runs.** Only while the settings tab is open. Nothing is added to `onload`.

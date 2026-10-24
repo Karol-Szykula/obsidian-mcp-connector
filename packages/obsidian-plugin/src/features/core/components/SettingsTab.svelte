@@ -38,6 +38,10 @@
   // Bumped when Access Control writes a policy (a Codex install that
   // switched a profile), so the policy panel re-reads the selected token.
   let accessPolicyRevision = 0;
+  // A token the Access Control migration notice handed over (#625). The
+  // policy panel runs its own migrate toggle for it, so `profile` keeps
+  // one writer (ADR-0025 D11).
+  let migrationRequest: { tokenId: string; seq: number } | null = null;
 </script>
 
 <div class="settings-container">
@@ -46,6 +50,11 @@
     bind:selectedTokenId
     {policyRevision}
     on:policychange={() => (accessPolicyRevision += 1)}
+    on:migraterequest={(event) =>
+      (migrationRequest = {
+        tokenId: event.detail,
+        seq: (migrationRequest?.seq ?? 0) + 1,
+      })}
   />
   <ClaudeDesktopIntegrationSection {plugin} />
   <CommandPermissionsSettings {plugin} />
@@ -54,6 +63,7 @@
     {plugin}
     tokenId={selectedTokenId}
     externalRevision={accessPolicyRevision}
+    {migrationRequest}
     on:policychange={() => (policyRevision += 1)}
   />
   <McpToolsSettings {plugin} />
