@@ -60,6 +60,13 @@ const REGISTRATION_PATTERN = new RegExp(
   `^${REGISTRATION_PATH}/(${UUID})$`,
   "i",
 );
+// Names Docker Desktop and Podman resolve to the host for a container, never
+// a name a web page can own, so they keep DNS rebinding out (ADR-0033).
+// Client routes only: registration and health stay loopback.
+const CONTAINER_HOST_NAMES = [
+  "host.docker.internal",
+  "host.containers.internal",
+];
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
   "keep-alive",
@@ -602,21 +609,31 @@ export function startBrokerServer(opts: {
 
   let boundPort = opts.port;
 
+  function hostAllowed(host: string, clientPath: boolean): boolean {
+    const names = clientPath
+      ? ["127.0.0.1", "localhost", ...CONTAINER_HOST_NAMES]
+      : ["127.0.0.1", "localhost"];
+    return names.some((name) => host === `${name}:${boundPort}`);
+  }
+
   async function handle(
     req: http.IncomingMessage,
     res: http.ServerResponse,
   ): Promise<void> {
+    const url = req.url ?? "";
+    const queryStart = url.indexOf("?");
+    const pathname = queryStart === -1 ? url : url.slice(0, queryStart);
+    const query = queryStart === -1 ? "" : url.slice(queryStart);
+    const routeMatch = ROUTE_PATTERN.exec(pathname);
+    const clientPath = routeMatch !== null || pathname === MCP_PATH_PREFIX;
     if (
-      ![`127.0.0.1:${boundPort}`, `localhost:${boundPort}`].includes(
-        req.headers.host ?? "",
-      ) ||
+      !hostAllowed((req.headers.host ?? "").toLowerCase(), clientPath) ||
       !isOriginAllowed(req.headers.origin)
     ) {
       res.setHeader("connection", "close");
       respond(res, 403, "untrusted request origin or host");
       return;
     }
-    const url = req.url ?? "";
     if (req.method === "GET" && url === HEALTH_PATH) {
       const body = JSON.stringify({
         name: BROKER_NAME,
@@ -634,10 +651,6 @@ export function startBrokerServer(opts: {
       await register(req, res, registrationMatch[1]);
       return;
     }
-    const queryStart = url.indexOf("?");
-    const pathname = queryStart === -1 ? url : url.slice(0, queryStart);
-    const query = queryStart === -1 ? "" : url.slice(queryStart);
-    const routeMatch = ROUTE_PATTERN.exec(pathname);
     if (routeMatch) {
       await routeRequest(req, res, routeMatch[1].toLowerCase(), query);
       return;
