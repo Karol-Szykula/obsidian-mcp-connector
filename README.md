@@ -44,6 +44,17 @@ Four things follow from that shape:
 - **Semantic search is on-device.** Transformers.js runs the embedding model locally. No API key, no Smart Connections requirement.
 - **Every request carries its own credentials.** The transport keeps no session state, which is what makes per-client tool surfaces possible.
 
+## What's new in 3.2.0
+
+| Change | Why it matters |
+|---|---|
+| **Fewer tools per session for older tokens** | Access Control points out tokens still on All tools and moves them to Adaptive after a preview: about 12k tokens less of tool list in every session. |
+| **No search-results view for Codex and Claude Code** | Installing for Codex or copying the Claude Code config turns the view off for that token, about 1k tokens less per search. |
+| **`show_file_in_obsidian` never writes** | The read-only tool no longer creates a missing file. |
+| **Clients in Docker or Podman** | The broker URL works from a container with `host.docker.internal`. See [Clients in Docker or Podman](#clients-in-docker-or-podman). |
+
+The full list is in the [CHANGELOG](CHANGELOG.md).
+
 ## What's new in 3.1.0
 
 | Change | Why it matters |
