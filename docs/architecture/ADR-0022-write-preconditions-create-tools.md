@@ -209,3 +209,18 @@ unchanged.
 
 Consequence to flag, as the original decision did: enabling `requireWritePreconditions` in an existing
 vault now changes the behaviour of three more tools. Called out in the CHANGELOG.
+
+## Amendment (2026-10-24, #631): `show_file_in_obsidian` drops `createIfMissing`
+
+The addendum above kept `createIfMissing` as an opt-in write on a tool annotated `readOnlyHint: true`.
+That left a write reachable through a read-only annotation: clients that skip confirmation for
+read-only tools (Codex `writes` mode, Claude Desktop per-tool policy) skipped it for that call too, and
+the "Disable write operations" preset, which is derived from the annotations, left the tool enabled.
+
+The argument is removed. `show_file_in_obsidian` now only opens an existing file, and a missing one is
+`file_not_found` with a pointer to `create_vault_file`. Creating and then opening a note takes two
+calls, through a tool that carries a write annotation. Two alternatives were rejected: marking the tool
+as an additive writer, which would ask for confirmation on every navigation call and switch the tool
+off under the read-only preset, and splitting it into a second create-and-open tool, which adds a tool
+to `tools/list` for something `create_vault_file` already does. A client that still sends
+`createIfMissing` is not rejected (undeclared keys are ignored) and gets the same `file_not_found`.

@@ -5,6 +5,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), version
 
 ## [Unreleased]
 
+### Changed
+
+- **`show_file_in_obsidian` no longer takes `createIfMissing`, so it never writes.** The tool is annotated read-only, but `createIfMissing: true` created an empty file. Clients that skip confirmation for read-only tools let that write through without asking, and the "Disable write operations" preset left it reachable. The tool now only opens an existing file; a missing one is a `file_not_found` error that points at `create_vault_file`. A client that still passes `createIfMissing` gets the same error instead of a new file (#631, ADR-0022)
+
 ## [3.1.1] — 2026-10-24
 
 ### Fixed
