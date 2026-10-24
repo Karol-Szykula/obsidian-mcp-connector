@@ -66,6 +66,80 @@ afterEach(() => {
 });
 
 describe("TransformersProviderImpl", () => {
+  test("unload disposes the pipeline and the next embed loads a new one", async () => {
+    let disposed = 0;
+    let created = 0;
+    const factory = async (_model: string) => {
+      created += 1;
+      const pipe = Object.assign(
+        async (input: string | string[]) => {
+          const n = Array.isArray(input) ? input.length : 1;
+          return { data: new Float32Array(768 * n), dims: [n, 768] };
+        },
+        {
+          dispose: async () => {
+            disposed += 1;
+          },
+        },
+      );
+      return pipe;
+    };
+    const provider = createTransformersProvider({
+      modelId: "m",
+      providerKey: "k",
+      dimensions: 768,
+      maxInputTokensByBackend: { wasm: 512, webgpu: 512 },
+      modelSizeBytes: 1,
+      taskPrompt: (t) => t,
+      pipelineFactory: factory,
+    });
+    await provider.embed(["a"], "query");
+    expect(created).toBe(1);
+
+    await provider.unload?.();
+    expect(disposed).toBe(1);
+    await provider.unload?.();
+    expect(disposed).toBe(1);
+
+    await provider.embed(["b"], "query");
+    expect(created).toBe(2);
+  });
+
+  test("unload during a load disposes that pipeline when it arrives", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let disposed = 0;
+    const factory = async (_model: string) => {
+      await gate;
+      return Object.assign(
+        async (input: string | string[]) => {
+          const n = Array.isArray(input) ? input.length : 1;
+          return { data: new Float32Array(768 * n), dims: [n, 768] };
+        },
+        {
+          dispose: async () => {
+            disposed += 1;
+          },
+        },
+      );
+    };
+    const provider = createTransformersProvider({
+      modelId: "m",
+      providerKey: "k",
+      dimensions: 768,
+      maxInputTokensByBackend: { wasm: 512, webgpu: 512 },
+      modelSizeBytes: 1,
+      taskPrompt: (t) => t,
+      pipelineFactory: factory,
+    });
+    const pending = provider.embed(["a"], "query");
+    await provider.unload?.();
+    release();
+    expect((await pending).length).toBe(1);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(disposed).toBe(1);
+  });
+
   test("applies task prompt before calling pipeline", async () => {
     const { factory, calls } = makeMockFactory(768);
     const provider = createTransformersProvider({

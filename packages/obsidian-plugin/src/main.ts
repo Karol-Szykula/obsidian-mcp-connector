@@ -40,6 +40,8 @@ import {
 import { wireSemanticSearch } from "./features/semantic-search/services/productionWiring";
 import { createSemanticWiring } from "./features/semantic-search/services/wiringLifecycle";
 import { loadSmartSearchAPI } from "./shared";
+import { releaseArkRegistry } from "./shared/arkRegistry";
+import { killTrackedChildren } from "./features/mcp-client-config/services/childProcesses";
 import { createGuardedApp, isGuardedApp } from "./shared/guardedApp";
 import { pathPolicyFor } from "./shared/policyProvider";
 import { logger } from "./shared/logger";
@@ -67,6 +69,13 @@ export default class McpToolsPlugin extends Plugin {
   promptsState?: PromptsFeatureState;
 
   semanticSearchState?: SemanticSearchState;
+
+  /**
+   * Set first thing in onunload. Obsidian awaits neither onload nor
+   * onunload, so a step of onload that finishes after it checks this
+   * before it installs anything on the instance.
+   */
+  private unloaded = false;
 
   /**
    * Tracks the pending semantic-search wiring. Obsidian awaits neither
@@ -216,7 +225,13 @@ export default class McpToolsPlugin extends Plugin {
         },
       );
       if (promptsResult.success) {
-        this.promptsState = promptsResult.state;
+        if (this.unloaded) {
+          // onunload already ran and found no prompts state: tear this
+          // one down here, or its vault listeners outlive the plugin.
+          promptsTeardown(promptsResult.state);
+        } else {
+          this.promptsState = promptsResult.state;
+        }
       } else {
         logger.error("Prompts feature setup failed", {
           error: promptsResult.error,
@@ -291,11 +306,28 @@ export default class McpToolsPlugin extends Plugin {
 
   // eslint-disable-next-line @typescript-eslint/no-misused-promises -- Obsidian calls onunload synchronously; the returned Promise is not awaited by the plugin lifecycle
   async onunload() {
+    this.unloaded = true;
+    try {
+      await this.teardown();
+    } finally {
+      // Last, after every await above: the bundle's arktype registry is a
+      // window global that would otherwise keep this evaluation of main.js
+      // alive through every reload, and a compiled schema reaches it by
+      // name, so nothing of this instance may validate after this point
+      // (ADR-0032).
+      releaseArkRegistry();
+    }
+  }
+
+  private async teardown() {
     logger.info("MCP Tools Plugin unloading");
     // First and synchronous: no queued transport or route operation runs
     // after this, and one still running tears down what it creates
     this.routeQueue.close();
     const wiringSettled = this.semanticWiring.unload();
+    // A `node --version` probe or an `npx` pre-warm still running would
+    // call back into this instance when it exits.
+    killTrackedChildren();
     disableSettingsReadCache(this);
     this.cancelSmartSearchPoll?.();
     this.cancelSmartSearchPoll = undefined;

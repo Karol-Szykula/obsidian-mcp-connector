@@ -1,5 +1,4 @@
-import { execFile } from "child_process";
-import { promisify } from "util";
+import { trackedExecFile } from "./childProcesses";
 import { delimiter } from "node:path";
 import type { PluginDataLike } from "$/shared/types";
 import { SettingsStore } from "$/shared/settingsStore";
@@ -65,14 +64,9 @@ export type ExecRunner = (
   options?: { timeout?: number; env?: NodeJS.ProcessEnv; shell?: boolean },
 ) => Promise<{ stdout: string; stderr: string }>;
 
-const defaultRunner: ExecRunner = (file, args, options) => {
-  const execFile_ = promisify(execFile) as (
-    f: string,
-    a: string[],
-    opts?: { timeout?: number; env?: NodeJS.ProcessEnv; shell?: boolean },
-  ) => Promise<{ stdout: string; stderr: string }>;
-  return execFile_(file, args, options);
-};
+// Tracked, so unloading the plugin ends a pre-warm still running.
+const defaultRunner: ExecRunner = (file, args, options) =>
+  trackedExecFile(file, args, options);
 
 // ---------------------------------------------------------------------------
 // Persistence

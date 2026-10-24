@@ -111,6 +111,8 @@ type RuntimeOptions = {
     credential: string,
     leaseId: string,
     registration: BrokerRegistration,
+    /** Aborted by stop() while the registration is still connecting. */
+    signal?: AbortSignal,
   ) => Promise<RegistrationControl>;
   reconnectMs?: number;
   /** Delay before re-electing after a dropped control connection. */
@@ -395,6 +397,10 @@ async function startRuntime(
     port: opts.transportPort,
   };
 
+  // The registration attempt in flight, so stop() can abort it instead of
+  // waiting for its answer or its timeout.
+  let connecting: AbortController | null = null;
+
   const establishControl = async () => {
     await host.ensure();
     if (stopped) return;
@@ -406,19 +412,26 @@ async function startRuntime(
         "This vault's broker route changed. Retry the connection",
       );
     }
+    const attempt = new AbortController();
+    connecting = attempt;
     const next = await openRegistration(
       host.port,
       routeId,
       current.accessToken,
       leaseId,
       registration,
-    ).catch(async (error: unknown) => {
-      if (!(error instanceof RegistrationRejected)) throw error;
-      throw new RegistrationRejected(
-        error.status,
-        await rejectionMessage(error.status, dataPath, plugin.manifest.id),
-      );
-    });
+      attempt.signal,
+    )
+      .catch(async (error: unknown) => {
+        if (!(error instanceof RegistrationRejected)) throw error;
+        throw new RegistrationRejected(
+          error.status,
+          await rejectionMessage(error.status, dataPath, plugin.manifest.id),
+        );
+      })
+      .finally(() => {
+        if (connecting === attempt) connecting = null;
+      });
     if (stopped) {
       next.close();
       await next.closed;
@@ -544,6 +557,7 @@ async function startRuntime(
       if (stopped) return;
       stopped = true;
       cancelReconnectDelay?.();
+      connecting?.abort();
       const currentControl = control;
       control = null;
       currentControl?.close();
@@ -589,6 +603,7 @@ async function connectRegistration(
   credential: string,
   leaseId: string,
   registration: BrokerRegistration,
+  signal?: AbortSignal,
 ): Promise<RegistrationControl> {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -602,6 +617,11 @@ async function connectRegistration(
         port,
         path: `${REGISTRATION_PATH}/${routeId}`,
         method: "POST",
+        // The control connection stays open for the life of the route, so
+        // it gets its own socket: through the shared keep-alive agent it
+        // would hold a pooled slot that outlives this plugin instance.
+        agent: false,
+        signal,
         headers: {
           authorization: `Bearer ${credential}`,
           "content-type": "application/json",

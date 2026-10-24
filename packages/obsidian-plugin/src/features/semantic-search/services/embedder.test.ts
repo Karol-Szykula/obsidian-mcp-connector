@@ -52,6 +52,43 @@ function makeMockFactory(): {
   };
 }
 
+/**
+ * Mock factory whose pipelines count their `dispose` calls. `loadGate`
+ * delays every construction, `callGate` delays every pipeline call after
+ * the first, so a test can hold a load or a call open across an unload.
+ */
+function makeDisposableFactory(
+  loadGate?: () => Promise<void>,
+  callGate?: () => Promise<void>,
+): {
+  factory: PipelineFactory;
+  disposed: () => number;
+  created: () => number;
+} {
+  let disposed = 0;
+  let created = 0;
+  let calls = 0;
+  const factory: PipelineFactory = async (_model: string) => {
+    if (loadGate) await loadGate();
+    created += 1;
+    const pipe: PipelineFn = async (input) => {
+      calls += 1;
+      if (callGate && calls > 1) await callGate();
+      const n = Array.isArray(input) ? input.length : 1;
+      return { data: new Float32Array(8 * n), dims: [n, 8] };
+    };
+    pipe.dispose = async () => {
+      disposed += 1;
+    };
+    return pipe;
+  };
+  return {
+    factory,
+    disposed: () => disposed,
+    created: () => created,
+  };
+}
+
 describe("embedder", () => {
   test("lazy load: factory not called until first embed", async () => {
     const { factory, callCount } = makeMockFactory();
@@ -185,6 +222,77 @@ describe("embedder", () => {
     expect(callCount()).toBe(2); // factory re-invoked (cache cleared)
     expect(embedCount()).toBe(2); // pipeline re-invoked, not a cache hit
     expect(second).not.toBe(first); // distinct array from the reload
+  });
+
+  test("unload disposes the pipeline", async () => {
+    const { factory, disposed } = makeDisposableFactory();
+    const embedder = createEmbedder({ pipelineFactory: factory });
+    await embedder.embed("hello");
+    expect(disposed()).toBe(0);
+
+    await embedder.unload();
+    expect(disposed()).toBe(1);
+    expect(embedder.isLoaded()).toBe(false);
+
+    // A second unload has nothing left to dispose.
+    await embedder.unload();
+    expect(disposed()).toBe(1);
+  });
+
+  test("unload during a load disposes that pipeline when it arrives", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { factory, disposed, created } = makeDisposableFactory(() => gate);
+    const embedder = createEmbedder({ pipelineFactory: factory });
+    const pending = embedder.embed("hello");
+    await embedder.unload();
+    expect(disposed()).toBe(0); // not created yet
+
+    release();
+    // The caller that awaited the load still gets its vector, then the
+    // pipeline it used is disposed, not kept as the current one.
+    expect((await pending).length).toBe(8);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(created()).toBe(1);
+    expect(disposed()).toBe(1);
+    expect(embedder.isLoaded()).toBe(false);
+
+    await embedder.embed("world");
+    expect(created()).toBe(2);
+    expect(disposed()).toBe(1);
+  });
+
+  test("unload while an embed is in flight disposes after it finishes", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { factory, disposed } = makeDisposableFactory(undefined, () => gate);
+    const embedder = createEmbedder({ pipelineFactory: factory });
+    await embedder.embed("warm"); // loaded; the first call is not gated
+    const inFlight = embedder.embed("slow");
+    await new Promise((r) => setTimeout(r, 0));
+
+    const unloaded = embedder.unload();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(disposed()).toBe(0); // still in use
+
+    release();
+    expect((await inFlight).length).toBe(8);
+    await unloaded;
+    await new Promise((r) => setTimeout(r, 0));
+    expect(disposed()).toBe(1);
+  });
+
+  test("idle timer disposes the pipeline it drops", async () => {
+    const { factory, disposed } = makeDisposableFactory();
+    const embedder = createEmbedder({
+      pipelineFactory: factory,
+      idleMs: 30,
+      unloadWhenIdle: true,
+    });
+    await embedder.embed("hello");
+    await new Promise((r) => setTimeout(r, 60));
+    expect(embedder.isLoaded()).toBe(false);
+    expect(disposed()).toBe(1);
   });
 
   test("idle timer: pipeline unloaded after idleMs since last call", async () => {

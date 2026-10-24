@@ -264,7 +264,8 @@ inside Obsidian's renderer. Those reads are the strongest lead on the Electron 4
 (#597, #609): moving the background reads off the store (the amendment above) cut it from about
 1 in 10 loads to about 1 in 100 on one Mac, and Electron 43.8.3 (Obsidian 1.14.5) did not fix it:
 3.0.3 crashed on the first reload, with the renderer faulting on a null read near Node's async-hooks
-code. The mechanism is still not traced. What changes:
+code. The mechanism is still not traced (_amendment, 2026-10-24: it is, and the crash that remained
+after this change was a different one; both are in [ADR-0032](/docs/architecture/ADR-0032-release-the-instance-at-unload.md)_). What changes:
 
 - `PathPolicyProvider` drops `runWith` and the store. `current()` returns the vault-wide policy and
   stays a separate entry point from `vaultWide`, so request paths remain findable: each

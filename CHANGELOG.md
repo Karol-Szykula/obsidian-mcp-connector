@@ -5,6 +5,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), version
 
 ## [Unreleased]
 
+### Fixed
+
+- **Reloading the plugin no longer keeps the previous instance in memory, which is what crashed the renderer on Obsidian 1.14 after 3.1.0.** The twelve crash reports behind #597 and #609, read with Electron's own symbol files, hold two signatures. Ten, all on 3.0.3, are V8 stopping on a "null prototype chain root" inside an `AsyncLocalStorage` read: Node 24 keeps the store's frames in a V8 slot that Chromium's task attribution also writes, and 3.1.0 closed this by dropping `AsyncLocalStorage`. The other two, one on 3.0.3 after two hours and one on 3.1.0-alpha.2 after 150 reloads, are V8 running out of JavaScript heap. That one is the plugin's: `@ark/schema`, the runtime of the `arktype` schema library, registers a `$ark` global the first time it is evaluated and never removes it, Obsidian evaluates `main.js` again on every enable, and each reload kept the whole previous evaluation reachable through that global, about 41 MB per reload on a build of 3.1.0 (measured outside Obsidian; 0 to 6 MB with the global removed). The plugin now removes its own registry as the last step of unload, so a reload frees the previous instance; a registry that another plugin's copy of arktype created is left alone. The README and the 3.1.0 notes described the remaining crash as "a failed V8 check on a background thread": that reading came from a stripped binary and was wrong (#597, #609, ADR-0032)
+- **Unloading the plugin releases the embedding models.** The MiniLM pipeline and the EmbeddingGemma and multilingual-e5 pipelines were dropped by reference at unload and when the idle timer fired, but their ONNX sessions, which hold the weights outside the JavaScript heap, were never released. They are now disposed, after any embedding still running on them has finished (ADR-0032)
+- **Three smaller things no longer outlive a disabled plugin.** A prompts setup that finished after `onunload` installed its vault listeners on the dead instance; it is torn down instead. The broker registration request went through Node's shared keep-alive agent, and a stop during a reconnection waited for its answer; it now has its own socket and is aborted. A `node --version` probe or an `npx mcp-remote` pre-warm still running at unload is now ended; `brew install node` is left to finish (ADR-0032)
+
 ## [3.1.0] — 2026-10-23
 
 ### Added

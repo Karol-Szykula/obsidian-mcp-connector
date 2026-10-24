@@ -556,6 +556,18 @@ export async function wireSemanticSearch(
       // under it would let it write after teardown. Nothing here holds it
       // up: its rebuild is over and only the flush is left.
       await Promise.allSettled([..._completingRebuilds]);
+      // Release the models: the ONNX sessions live outside the JavaScript
+      // heap and survive the plugin instance otherwise (ADR-0032).
+      for (const [providerKey, ep] of Object.entries(embeddingProviders)) {
+        try {
+          await ep.unload?.();
+        } catch (err) {
+          logger.warn("semantic-search: provider unload failed", {
+            providerKey,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
       try {
         await embedder.unload();
       } catch {
