@@ -14,6 +14,11 @@
  *    is dropped 60s after the last call (RAM saver for memory-
  *    constrained users). The next call cold-reloads.
  *
+ * A dropped pipeline is disposed, not only dereferenced: its ONNX
+ * sessions hold the model weights outside the JavaScript heap, and
+ * the garbage collector does not reclaim them (#597, ADR-0032). The
+ * disposal waits for calls still in flight on that pipeline.
+ *
  * Production code injects `realPipelineFactory` (static import of
  * `@huggingface/transformers`) so Transformers.js is not pulled into the
  * bundle eager-side. Tests inject a deterministic mock factory: no
@@ -35,7 +40,7 @@ export type EmbedTensor = { data: Float32Array; dims?: number[] };
  * `await pipeline("feature-extraction", model)`. We type only the
  * call signature we use.
  */
-export type PipelineFn = (
+export type PipelineFn = ((
   input: string | string[],
   opts?: {
     pooling?: "mean" | "cls" | "none";
@@ -43,7 +48,13 @@ export type PipelineFn = (
     truncation?: boolean;
     max_length?: number;
   },
-) => Promise<EmbedTensor>;
+) => Promise<EmbedTensor>) & {
+  /**
+   * Releases the pipeline's ONNX sessions (`Pipeline.dispose` in
+   * Transformers.js). Optional so a test's plain function qualifies.
+   */
+  dispose?: () => Promise<void>;
+};
 
 export type PipelineFactory = (model: string) => Promise<PipelineFn>;
 
@@ -105,6 +116,10 @@ class EmbedderImpl implements Embedder {
   // within-batch duplicate identity comes from embedBatch's dedupe map.
   private cache = new Map<string, Promise<Float32Array>>();
   private idleTimer: number | null = null;
+  // Calls in flight on the current pipeline. A pipeline dropped while
+  // they run is disposed once the last of them settles.
+  private active = 0;
+  private retired = new Set<PipelineFn>();
 
   constructor(private opts: EmbedderOpts) {}
 
@@ -123,8 +138,7 @@ class EmbedderImpl implements Embedder {
       return cached;
     }
 
-    const promise = (async (): Promise<Float32Array> => {
-      const pipe = await this.ensurePipeline();
+    const promise = this.withPipeline(async (pipe) => {
       const result = await pipe(text, {
         pooling: "mean",
         normalize: true,
@@ -134,7 +148,7 @@ class EmbedderImpl implements Embedder {
       // Copy into a fresh Float32Array so the cache holds an owned
       // reference even if the pipeline reuses internal buffers.
       return new Float32Array(result.data);
-    })();
+    });
     this.cacheSet(text, promise);
     // A rejected embed must not be served to later calls for the same
     // text; evict it (only if this entry still owns the slot).
@@ -174,8 +188,7 @@ class EmbedderImpl implements Embedder {
     for (let start = 0; start < entries.length; start += EMBED_BATCH_SIZE) {
       const slice = entries.slice(start, start + EMBED_BATCH_SIZE);
       const batchTexts = slice.map(([text]) => text);
-      const batchPromise = (async (): Promise<Float32Array[]> => {
-        const pipe = await this.ensurePipeline();
+      const batchPromise = this.withPipeline(async (pipe) => {
         const result = await pipe(batchTexts, {
           pooling: "mean",
           normalize: true,
@@ -199,7 +212,7 @@ class EmbedderImpl implements Embedder {
               result.data.subarray(row * stride, (row + 1) * stride),
             ),
         );
-      })();
+      });
       slice.forEach(([, positions], row) => {
         const rowPromise = batchPromise.then((rows) => {
           const v = rows[row];
@@ -214,15 +227,49 @@ class EmbedderImpl implements Embedder {
   }
 
   async unload(): Promise<void> {
-    this.pipeline = null;
-    this.loadPromise = null;
+    if (this.idleTimer) {
+      window.clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
     // A cached vector belongs to the model instance that produced it;
     // it must not survive an unload/reload and be served against a
     // freshly constructed pipeline.
     this.cache.clear();
-    if (this.idleTimer) {
-      window.clearTimeout(this.idleTimer);
-      this.idleTimer = null;
+    await this.dropPipeline();
+  }
+
+  /**
+   * Forgets the current pipeline and disposes it once no call is using
+   * it. A load still pending is forgotten too: ensurePipeline disposes
+   * its pipeline on arrival, because the load is no longer the current
+   * one.
+   */
+  private dropPipeline(): Promise<void> {
+    const pipe = this.pipeline;
+    this.pipeline = null;
+    this.loadPromise = null;
+    if (pipe) this.retired.add(pipe);
+    return this.disposeRetired();
+  }
+
+  private async disposeRetired(): Promise<void> {
+    if (this.active > 0 || this.retired.size === 0) return;
+    const batch = [...this.retired];
+    this.retired.clear();
+    await Promise.all(batch.map((p) => disposePipeline(p)));
+  }
+
+  /** Runs `fn` on the loaded pipeline, counted as in flight. */
+  private async withPipeline<T>(
+    fn: (pipe: PipelineFn) => Promise<T>,
+  ): Promise<T> {
+    this.active += 1;
+    try {
+      const pipe = await this.ensurePipeline();
+      return await fn(pipe);
+    } finally {
+      this.active -= 1;
+      void this.disposeRetired();
     }
   }
 
@@ -230,18 +277,27 @@ class EmbedderImpl implements Embedder {
     if (this.pipeline) return this.pipeline;
     if (!this.loadPromise) {
       const model = this.opts.model ?? DEFAULT_MODEL;
-      this.loadPromise = this.opts
+      const load: Promise<PipelineFn> = this.opts
         .pipelineFactory(model)
         .then((p) => {
-          this.pipeline = p;
+          if (this.loadPromise === load) {
+            this.pipeline = p;
+          } else {
+            // Unloaded, or idled out, while loading: the callers that
+            // awaited this load still get the pipeline, and it is
+            // disposed once they are done with it.
+            this.retired.add(p);
+            void this.disposeRetired();
+          }
           return p;
         })
         .catch((e: unknown) => {
           // A failed load must not pin a rejected promise for the rest
           // of the session; clear it so the next call retries the factory.
-          this.loadPromise = null;
+          if (this.loadPromise === load) this.loadPromise = null;
           throw e;
         });
+      this.loadPromise = load;
     }
     return this.loadPromise;
   }
@@ -263,15 +319,36 @@ class EmbedderImpl implements Embedder {
     if (this.opts.unloadWhenIdle !== true) return;
     if (this.idleTimer) window.clearTimeout(this.idleTimer);
     this.idleTimer = window.setTimeout(() => {
-      this.pipeline = null;
-      this.loadPromise = null;
       this.idleTimer = null;
+      // A batch still running: it touched the timer when it started,
+      // so wait one more idle period rather than pull its pipeline.
+      if (this.active > 0) {
+        this.touchIdle();
+        return;
+      }
+      void this.dropPipeline();
     }, this.opts.idleMs ?? DEFAULT_IDLE_MS);
   }
 }
 
 export function createEmbedder(opts: EmbedderOpts): Embedder {
   return new EmbedderImpl(opts);
+}
+
+/**
+ * Releases a pipeline's ONNX sessions. Best-effort: a pipeline without
+ * `dispose` (a test double) is a no-op, and a failing release is logged,
+ * because the caller is unloading and has nothing left to do about it.
+ */
+export async function disposePipeline(pipe: PipelineFn): Promise<void> {
+  if (typeof pipe.dispose !== "function") return;
+  try {
+    await pipe.dispose();
+  } catch (error) {
+    logger.warn("semantic-search: pipeline dispose failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 /**

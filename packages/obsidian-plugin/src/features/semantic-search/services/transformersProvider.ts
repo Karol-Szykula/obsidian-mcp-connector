@@ -8,11 +8,13 @@
  *
  * The underlying pipeline is loaded lazily on the first `embed()` call;
  * concurrent calls during cold load share the same `Promise<PipelineFn>` so
- * the model is constructed exactly once.
+ * the model is constructed exactly once. `unload()` disposes it: the ONNX
+ * sessions hold the weights outside the JavaScript heap, where dropping
+ * the reference frees nothing (ADR-0032).
  */
 
 import type { BackendKind, EmbeddingProvider } from "../types";
-import { resolveBackend } from "./embedder";
+import { disposePipeline, resolveBackend } from "./embedder";
 import type { PipelineFactory, PipelineFn } from "./embedder";
 
 export type TaskPromptFn = (text: string, role: "document" | "query") => string;
@@ -126,19 +128,33 @@ class TransformersProviderImpl implements EmbeddingProvider {
     return out;
   }
 
+  /**
+   * Forgets the current pipeline and disposes it. A load still pending is
+   * forgotten too, and its pipeline is disposed when it arrives. Teardown
+   * stops the indexers first, so no embed is in flight here.
+   */
+  async unload(): Promise<void> {
+    const pipe = this.pipeline;
+    this.pipeline = null;
+    this.loadPromise = null;
+    if (pipe) await disposePipeline(pipe);
+  }
+
   private async ensurePipeline(): Promise<PipelineFn> {
     if (this.pipeline) return this.pipeline;
     if (!this.loadPromise) {
-      this.loadPromise = this.opts
+      const load: Promise<PipelineFn> = this.opts
         .pipelineFactory(this.opts.modelId)
         .then((p) => {
-          this.pipeline = p;
+          if (this.loadPromise === load) this.pipeline = p;
+          else void disposePipeline(p);
           return p;
         })
         .catch((e: unknown) => {
-          this.loadPromise = null;
+          if (this.loadPromise === load) this.loadPromise = null;
           throw e;
         });
+      this.loadPromise = load;
     }
     return this.loadPromise;
   }

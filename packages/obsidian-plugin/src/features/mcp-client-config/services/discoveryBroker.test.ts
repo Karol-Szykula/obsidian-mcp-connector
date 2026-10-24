@@ -120,6 +120,7 @@ async function connectRegistration(
   credential: string,
   _lease: string,
   registration: unknown,
+  _signal?: AbortSignal,
 ): Promise<TestControl> {
   registrations.push({ registration, credential });
   let resolveClosed!: () => void;
@@ -499,6 +500,56 @@ describe("recovery", () => {
 
     await stopPromise;
     expect(secondClosed).toBe(true);
+  });
+
+  test("stop() aborts a reconnection still connecting instead of waiting for it", async () => {
+    const plugin = fakePlugin(withTokens("a"));
+    let callCount = 0;
+    let secondRequested!: () => void;
+    const secondCalled = new Promise<void>((resolve) => {
+      secondRequested = resolve;
+    });
+    let secondSignal: AbortSignal | undefined;
+    const hangingConnect: typeof connectRegistration = async (
+      port,
+      routeIdArg,
+      token,
+      lease,
+      registration,
+      signal,
+    ) => {
+      callCount += 1;
+      if (callCount === 1) {
+        return connectRegistration(
+          port,
+          routeIdArg,
+          token,
+          lease,
+          registration,
+        );
+      }
+      // A registration that never answers: only the abort ends it, as it
+      // does for a real request whose broker went silent.
+      secondSignal = signal;
+      secondRequested();
+      return new Promise<TestControl>((_, reject) => {
+        signal?.addEventListener("abort", () =>
+          reject(new Error("Broker registration aborted")),
+        );
+      });
+    };
+
+    const runtime = await startDiscovery(plugin, {
+      ...fakeOpts(),
+      connectRegistration: hangingConnect,
+    });
+    controls[0].disconnect();
+    await secondCalled;
+    expect(secondSignal).toBeDefined();
+
+    await runtime.stop();
+    expect(secondSignal!.aborted).toBe(true);
+    expect(runtime.status.state).toBe("stopped");
   });
 
   test("initial connection failure retries and publishes connected then stopped status", async () => {

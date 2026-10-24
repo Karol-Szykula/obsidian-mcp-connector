@@ -1,5 +1,4 @@
-import { execFile } from "child_process";
-import { promisify } from "util";
+import { trackedExecFile } from "./childProcesses";
 import os from "os";
 
 /**
@@ -53,7 +52,8 @@ export type ExecRunner = (
   stderr: string;
 }>;
 
-const defaultRunner: ExecRunner = promisify(execFile);
+// Tracked, so unloading the plugin ends a probe still running.
+const defaultRunner: ExecRunner = (file, args) => trackedExecFile(file, args);
 
 let cached: NodeDetectResult | null = null;
 let cachedNodePath: string | null = null;

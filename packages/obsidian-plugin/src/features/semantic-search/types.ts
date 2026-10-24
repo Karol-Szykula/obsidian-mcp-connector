@@ -37,6 +37,13 @@ export interface EmbeddingProvider {
   embed(texts: string[], role: "document" | "query"): Promise<Float32Array[]>;
   isAvailable(): Promise<boolean>;
   getModelSizeBytes(): number;
+  /**
+   * Releases the model the provider loaded (its ONNX sessions). Called
+   * at teardown. Providers that own no model, such as the Smart
+   * Connections bridge or the native provider over the shared embedder,
+   * leave it out.
+   */
+  unload?(): Promise<void>;
 }
 
 /**
