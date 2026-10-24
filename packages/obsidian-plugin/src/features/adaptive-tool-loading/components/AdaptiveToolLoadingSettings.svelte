@@ -2,7 +2,7 @@
   import type McpToolsPlugin from "$/main";
   import { Notice } from "obsidian";
   import { logger } from "$/shared/logger";
-  import { createEventDispatcher, onMount } from "svelte";
+  import { createEventDispatcher, onMount, tick } from "svelte";
   import { ToolLoadingManager } from "../toolLoadingManager";
   import {
     readEverCalled,
@@ -43,6 +43,14 @@
    */
   export let externalRevision = 0;
   let seenExternalRevision = 0;
+  /**
+   * A token the Access Control migration notice handed over (#625):
+   * runs this panel's migrate toggle for it, confirmation included, so
+   * the toggle stays the one writer of `profile` (ADR-0025 D11).
+   */
+  export let migrationRequest: { tokenId: string; seq: number } | null = null;
+  let seenMigrationSeq = 0;
+  let migrateCheckbox: HTMLInputElement | undefined;
 
   // Access Control renders each token's profile and active tool count,
   // so it has to re-read them after every write here.
@@ -107,6 +115,29 @@
   $: if (externalRevision !== seenExternalRevision) {
     seenExternalRevision = externalRevision;
     if (tokenId) void loadPolicy(tokenId);
+  }
+  $: if (migrationRequest && migrationRequest.seq !== seenMigrationSeq) {
+    seenMigrationSeq = migrationRequest.seq;
+    void runRequestedMigration(migrationRequest.tokenId);
+  }
+
+  /**
+   * The notice selects the token before asking, so `tokenId` already
+   * names it. Anything else (a selection changed meanwhile, a token no
+   * longer eligible, a write in flight) drops the request: the user
+   * can still use the toggle by hand.
+   */
+  async function runRequestedMigration(id: string): Promise<void> {
+    if (id !== tokenId || busy) return;
+    await loadPolicy(id);
+    await tick();
+    if (id !== tokenId || busy || !migrateCheckbox) return;
+    if (viewState.state !== "eligible-off" || allToolNames.length === 0) {
+      return;
+    }
+    migrateCheckbox.scrollIntoView({ block: "center" });
+    migrateCheckbox.checked = true;
+    await confirmAndMigrate(migrateCheckbox);
   }
 
   async function loadPolicy(id: string): Promise<void> {
@@ -421,6 +452,7 @@
       <label class="radio-row">
         <input
           type="checkbox"
+          bind:this={migrateCheckbox}
           checked={viewState.checked}
           disabled={viewState.disabled || busy || allToolNames.length === 0}
           on:change={onAdaptiveToggle}

@@ -646,3 +646,44 @@ describe("TokenPolicy.searchResultsView", () => {
     );
   });
 });
+
+describe("migrationNoticeDismissed (#625)", () => {
+  test("dismissing stores the token once and reads back", async () => {
+    const plugin = makePlugin({ ...TWO_TOKEN_FIXTURE });
+
+    await tokenPolicyStore.dismissMigrationNotice(plugin, "claude");
+    await tokenPolicyStore.dismissMigrationNotice(plugin, "claude");
+
+    expect(await tokenPolicyStore.readMigrationNoticeDismissed(plugin)).toEqual(
+      ["claude"],
+    );
+  });
+
+  test("prunes a revoked token and drops the key when nothing is left", async () => {
+    const plugin = makePlugin({
+      ...TWO_TOKEN_FIXTURE,
+      toolLoading: {
+        profile: "all",
+        promoted: [],
+        counters: {},
+        migrationNoticeDismissed: ["gone"],
+      },
+    });
+
+    await updateToolLoading(plugin, (state) => state);
+
+    const slice = plugin._store().toolLoading as Record<string, unknown>;
+    expect("migrationNoticeDismissed" in slice).toBe(false);
+  });
+
+  test("a malformed value reads as empty", async () => {
+    const plugin = makePlugin({
+      ...TWO_TOKEN_FIXTURE,
+      toolLoading: { migrationNoticeDismissed: ["claude", 7] },
+    });
+
+    expect(await tokenPolicyStore.readMigrationNoticeDismissed(plugin)).toEqual(
+      [],
+    );
+  });
+});

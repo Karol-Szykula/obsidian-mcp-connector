@@ -50,6 +50,7 @@
     type TokenPolicy,
   } from "$/features/adaptive-tool-loading/tokenPolicyStore";
   import { resolveToolScope } from "$/features/adaptive-tool-loading/resolveToolScope";
+  import MigrationNotice from "$/features/adaptive-tool-loading/components/MigrationNotice.svelte";
   import { SettingsStore } from "$/shared/settingsStore";
 
   export let plugin: McpToolsPlugin;
@@ -59,12 +60,18 @@
   export let policyRevision = 0;
 
   // A Codex install that switched a token's profile, so the Tool Loading
-  // panel re-reads the policy it shows
-  const dispatch = createEventDispatcher<{ policychange: void }>();
+  // panel re-reads the policy it shows. `migraterequest` asks that panel
+  // to run its migrate toggle for a token the notice offered (#625).
+  const dispatch = createEventDispatcher<{
+    policychange: void;
+    migraterequest: string;
+  }>();
 
   let tokens: TokenRecord[] = [];
   let policies: Record<string, TokenPolicy> = {};
   let toolCounts: Record<string, number> = {};
+  // Bumped after every policy re-read, so the migration notice follows
+  let policiesRead = 0;
   let revealed: Record<string, boolean> = {};
   let renamingId: string | null = null;
   let renameValue = "";
@@ -283,6 +290,12 @@
     }
     policies = nextPolicies;
     toolCounts = nextCounts;
+    policiesRead += 1;
+  }
+
+  function requestMigration(tokenId: string): void {
+    selectedTokenId = tokenId;
+    dispatch("migraterequest", tokenId);
   }
 
   /**
@@ -765,6 +778,12 @@
   {#if tokens.length === 0}
     <p class="token-unavailable">HTTP transport not running</p>
   {:else}
+    <MigrationNotice
+      {plugin}
+      tokens={tokens.map(({ id, label, createdAt }) => ({ id, label, createdAt }))}
+      revision={policiesRead}
+      on:migrate={(event) => requestMigration(event.detail)}
+    />
     <ul class="token-list">
       {#each tokens as token (token.id)}
         <li class="token-row" class:selected={token.id === selectedTokenId}>

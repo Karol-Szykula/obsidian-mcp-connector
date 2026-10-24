@@ -91,6 +91,12 @@ export type ToolLoadingState = {
    * `max(everCalledSince, token.createdAt)`.
    */
   everCalledSince?: number;
+  /**
+   * Tokens whose migration notice in Access Control the user dismissed
+   * (#625). UI state only: it never decides a profile, so it has nothing
+   * to agree with (ADR-0025 D11 amendment).
+   */
+  migrationNoticeDismissed: string[];
 };
 
 /** Context every `updateToolLoading` recipe gets alongside the state. */
@@ -215,6 +221,9 @@ export function mergeState(slice: unknown): ToolLoadingState {
     everCalled: normalizeEverCalled(s.everCalled),
     everCalledSince:
       typeof s.everCalledSince === "number" ? s.everCalledSince : undefined,
+    migrationNoticeDismissed: isStringArray(s.migrationNoticeDismissed)
+      ? [...s.migrationNoticeDismissed]
+      : [],
   };
 }
 
@@ -225,16 +234,26 @@ export function mergeState(slice: unknown): ToolLoadingState {
  * `data.json` and defeat the NO_CHANGE convention.
  */
 function toSlice(state: ToolLoadingState): Record<string, unknown> {
-  const { profiles, everCalled, everCalledSince, ...rest } = state;
+  const {
+    profiles,
+    everCalled,
+    everCalledSince,
+    migrationNoticeDismissed,
+    ...rest
+  } = state;
   const withProfiles =
     Object.keys(profiles).length > 0 ? { ...rest, profiles } : rest;
   const withEverCalled =
     Object.keys(everCalled).length > 0
       ? { ...withProfiles, everCalled }
       : withProfiles;
-  return everCalledSince !== undefined
-    ? { ...withEverCalled, everCalledSince }
-    : withEverCalled;
+  const withAnchor =
+    everCalledSince !== undefined
+      ? { ...withEverCalled, everCalledSince }
+      : withEverCalled;
+  return migrationNoticeDismissed.length > 0
+    ? { ...withAnchor, migrationNoticeDismissed }
+    : withAnchor;
 }
 
 /**
@@ -302,6 +321,31 @@ export async function readEverCalledSince(
 }
 
 /**
+ * The tokens whose migration notice was dismissed (#625), or `[]`.
+ */
+export async function readMigrationNoticeDismissed(
+  plugin: PluginDataLike,
+): Promise<string[]> {
+  const slice = await new SettingsStore(plugin).readSlice(SLICE);
+  return isRecord(slice) && isStringArray(slice.migrationNoticeDismissed)
+    ? [...slice.migrationNoticeDismissed]
+    : [];
+}
+
+/** Hide the migration notice for `tokenId` from now on (#625). */
+export async function dismissMigrationNotice(
+  plugin: PluginDataLike,
+  tokenId: string,
+): Promise<void> {
+  await updateToolLoading(plugin, (state) => {
+    if (!state.migrationNoticeDismissed.includes(tokenId)) {
+      state.migrationNoticeDismissed.push(tokenId);
+    }
+    return state;
+  });
+}
+
+/**
  * `tokenId`'s live `label` and `createdAt`, read from `mcpTransport.tokens`
  * structurally through `SettingsStore.readSlice` — never by importing
  * `tokenStore`, the same one-directional convention {@link tokenIdsIn}
@@ -362,6 +406,9 @@ export async function updateToolLoading(
       for (const id of Object.keys(next.everCalled)) {
         if (!tokenIds.includes(id)) delete next.everCalled[id];
       }
+      next.migrationNoticeDismissed = next.migrationNoticeDismissed.filter(
+        (id) => tokenIds.includes(id),
+      );
     }
 
     // A missing entry resolves to the default policy, it does not leave
