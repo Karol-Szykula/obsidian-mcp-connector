@@ -729,6 +729,59 @@ test("broker rejects unexpected Host headers on every endpoint", async () => {
   }
 });
 
+test("broker accepts container host names on client routes only (#640)", async () => {
+  const port = await startBroker();
+  for (const name of [
+    "host.docker.internal",
+    "HOST.Docker.Internal",
+    "host.containers.internal",
+  ]) {
+    const host = `${name}:${port}`;
+    expect(
+      (await request(port, { path: `/v1/${routeId}/mcp`, headers: { host } }))
+        .status,
+    ).toBe(404);
+    expect(
+      (await request(port, { path: "/mcp", headers: { host } })).status,
+    ).toBe(405);
+    expect(
+      (await request(port, { path: HEALTH_PATH, headers: { host } })).status,
+    ).toBe(403);
+    expect(
+      (
+        await request(port, {
+          path: `${REGISTRATION_PATH}/${routeId}`,
+          body: "{}",
+          headers: { host },
+        })
+      ).status,
+    ).toBe(403);
+  }
+  for (const host of [
+    `host.docker.internal:${port + 1}`,
+    "host.docker.internal",
+    `host.docker.internal.evil.example:${port}`,
+    `evil.host.docker.internal:${port}`,
+  ]) {
+    expect(
+      (await request(port, { path: `/v1/${routeId}/mcp`, headers: { host } }))
+        .status,
+    ).toBe(403);
+  }
+  // The Origin check still applies on a container host name
+  expect(
+    (
+      await request(port, {
+        path: "/mcp",
+        headers: {
+          host: `host.docker.internal:${port}`,
+          origin: "https://evil.example",
+        },
+      })
+    ).status,
+  ).toBe(403);
+});
+
 test("pending registration cap preserves live routes and releases failed admission slots", async () => {
   const file = await vaultTarget("original", "vault");
   // Registration deadlines expire only when the test fires them, and an

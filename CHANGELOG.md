@@ -5,6 +5,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), version
 
 ## [Unreleased]
 
+### Fixed
+
+- **Clients running in Docker or Podman can reach the vault through the broker URL.** The shared broker on port 27200 refused every request whose `Host` was not `127.0.0.1` or `localhost`, so a container calling `host.docker.internal:27200` got `403 untrusted request origin or host` and the client showed the server as unhealthy. The broker now also accepts `host.docker.internal` and `host.containers.internal` on client routes, with the same Origin and token checks. Registration and the health endpoint stay loopback-only. This needs Docker Desktop or Podman Desktop; Docker Engine on Linux is not covered (#640, ADR-0033)
+
 ### Changed
 
 - **Installing for Codex or copying the Claude Code config turns off the search-results view for that token.** Neither client can show the MCP Apps view, but both received its payload on every search, about 3.8 KB on a 3-result `search_vault_simple`, more than the result itself (roughly 1k tokens per search). The Codex install preview now has a "Turn off the search-results view" box, ticked by default, and the Claude Code copy buttons turn it off after copying and say so in the notice. Only a token that still inherits the vault-wide setting is changed; one where you chose on or off is left alone, and the switch stays in the token's Tool Loading panel (#626, ADR-0028)

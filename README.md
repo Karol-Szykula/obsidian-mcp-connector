@@ -553,6 +553,16 @@ Below it, **Replace all token secrets** replaces every client token secret in an
 
 Legacy settings bind to their current location on first upgraded use, so a pre-upgrade copy opened alone cannot be identified automatically
 
+### Clients in Docker or Podman
+
+A client running in a container, such as MetaMCP or LiteLLM, uses the same URL with `127.0.0.1` replaced by `host.docker.internal`, or by `host.containers.internal` on Podman:
+
+```text
+http://host.docker.internal:27200/v1/<route-id>/mcp
+```
+
+This needs Docker Desktop or Podman Desktop, which deliver those names to the host's loopback, where the vault listens. Docker Engine on Linux without Docker Desktop does not, so a container there cannot reach the vault. Every open vault needs a release that includes this, because any of them can host the shared broker ([ADR-0033](docs/architecture/ADR-0033-container-host-names-on-the-broker.md))
+
 ### Verifying
 
 Your client should list the tools your token's profile allows, plus any prompts tagged `#mcp-tools-prompt`. For request-level inspection without a model in the loop:
