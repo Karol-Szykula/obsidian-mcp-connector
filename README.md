@@ -44,6 +44,13 @@ Four things follow from that shape:
 - **Semantic search is on-device.** Transformers.js runs the embedding model locally. No API key, no Smart Connections requirement.
 - **Every request carries its own credentials.** The transport keeps no session state, which is what makes per-client tool surfaces possible.
 
+## What's new in 3.2.1
+
+| Change | Why it matters |
+|---|---|
+| **EmbeddingGemma finds the right notes** | Gemma now runs on the CPU and reads the model's real sentence vector. On a 12-note test vault the expected note came first in 7 queries out of 7, against 1 in 7 before. The Gemma index is rebuilt once after the update. |
+| **Download progress for every model** | The settings bar shows the EmbeddingGemma and multilingual-e5 downloads too, by name, with Retry. |
+
 ## What's new in 3.2.0
 
 | Change | Why it matters |
