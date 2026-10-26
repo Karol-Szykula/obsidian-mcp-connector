@@ -44,6 +44,13 @@ Four things follow from that shape:
 - **Semantic search is on-device.** Transformers.js runs the embedding model locally. No API key, no Smart Connections requirement.
 - **Every request carries its own credentials.** The transport keeps no session state, which is what makes per-client tool surfaces possible.
 
+## What's new in 3.2.2
+
+| Change | Why it matters |
+|---|---|
+| **Picking EmbeddingGemma or multilingual-e5 starts the download** | The model download and the index build start as soon as you choose the provider, with no "Rebuild now" press. |
+| **The banner says what the build is doing** | Building (with chunks so far), not built yet, or failed with Retry. "Rebuild now" answers with a notice, and a notice says when the index is ready. |
+
 ## What's new in 3.2.1
 
 | Change | Why it matters |
