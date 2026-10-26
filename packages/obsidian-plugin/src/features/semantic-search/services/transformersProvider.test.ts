@@ -47,6 +47,33 @@ function makeMockFactoryWithOpts(dim: number): {
   return { factory, optsLog };
 }
 
+/**
+ * A pipeline shaped like Transformers.js's: callable, with the tokenizer
+ * and model the sentence_embedding wrapper reads. `calls` lists every
+ * text the tokenizer saw.
+ */
+function makeSentenceEmbeddingFactory(dim: number): {
+  factory: (model: string) => Promise<MockPipelineFn>;
+  calls: string[];
+} {
+  const calls: string[] = [];
+  const factory = async (_model: string): Promise<MockPipelineFn> => {
+    const pipe: MockPipelineFn = async () => {
+      throw new Error("the pipeline's own pooling must not run");
+    };
+    return Object.assign(pipe, {
+      tokenizer: (texts: string[]) => {
+        calls.push(...texts);
+        return { n: texts.length };
+      },
+      model: async ({ n }: { n: number }) => ({
+        sentence_embedding: { data: new Float32Array(dim * n), dims: [n, dim] },
+      }),
+    });
+  };
+  return { factory, calls };
+}
+
 function makeMockEmbedder(loaded = true): Embedder {
   return {
     embed: async (_text) => new Float32Array(384),
@@ -328,31 +355,31 @@ describe("TransformersProviderImpl — truncation opts", () => {
 
 describe("EmbeddingGemmaProvider", () => {
   test("providerKey, dimensions, sync maxInputTokens (wasm cap)", () => {
-    const { factory } = makeMockFactory(768);
+    const { factory } = makeSentenceEmbeddingFactory(768);
     const provider = createEmbeddingGemmaProvider(factory);
     expect(provider.providerKey).toBe("embedding-gemma-300m");
     expect(provider.dimensions).toBe(768);
     expect(provider.maxInputTokens).toBe(512);
   });
 
-  test("getMaxInputTokens unlocks 2048 on webgpu", async () => {
-    const { factory } = makeMockFactory(768);
+  test("stays at the WASM cap of 512 even when WebGPU is resolved", async () => {
+    const { factory } = makeSentenceEmbeddingFactory(768);
     const provider = createEmbeddingGemmaProvider(factory);
     await resolveBackend({
       gpu: { requestAdapter: async () => ({}) },
     });
-    expect(await provider.getMaxInputTokens()).toBe(2048);
+    expect(await provider.getMaxInputTokens()).toBe(512);
   });
 
   test("getModelSizeBytes returns 190 MB", () => {
-    const { factory } = makeMockFactory(768);
+    const { factory } = makeSentenceEmbeddingFactory(768);
     expect(createEmbeddingGemmaProvider(factory).getModelSizeBytes()).toBe(
       190_000_000,
     );
   });
 
   test("document role → title/text prompt format", async () => {
-    const { factory, calls } = makeMockFactory(768);
+    const { factory, calls } = makeSentenceEmbeddingFactory(768);
     await createEmbeddingGemmaProvider(factory).embed(
       ["my document"],
       "document",
@@ -361,9 +388,18 @@ describe("EmbeddingGemmaProvider", () => {
   });
 
   test("query role → task/query prompt format", async () => {
-    const { factory, calls } = makeMockFactory(768);
+    const { factory, calls } = makeSentenceEmbeddingFactory(768);
     await createEmbeddingGemmaProvider(factory).embed(["my query"], "query");
     expect(calls[0]).toBe("task: search result | query: my query");
+  });
+
+  test("returns the model's sentence_embedding, not the pipeline's pooling", async () => {
+    const { factory } = makeSentenceEmbeddingFactory(768);
+    const [vec] = await createEmbeddingGemmaProvider(factory).embed(
+      ["text"],
+      "document",
+    );
+    expect(vec.length).toBe(768);
   });
 });
 

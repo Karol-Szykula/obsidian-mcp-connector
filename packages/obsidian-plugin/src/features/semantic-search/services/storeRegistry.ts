@@ -5,6 +5,23 @@ import {
   type VaultAdapter,
 } from "./store";
 
+/**
+ * Vector revision per provider key (see `vectorRevision` in store.ts).
+ * A key that is not listed is at revision 0.
+ *
+ * embedding-gemma-300m 2: vectors come from the model's
+ * `sentence_embedding` output instead of mean-pooled token states, and
+ * are computed on WASM instead of WebGPU, so every stored Gemma vector
+ * is replaced. (Revision 1, sentence_embedding on WebGPU, only existed
+ * on test builds.)
+ */
+export const PROVIDER_VECTOR_REVISION: Readonly<Record<string, number>> = {
+  "embedding-gemma-300m": 2,
+};
+
+export const vectorRevisionFor = (providerKey: string): number =>
+  PROVIDER_VECTOR_REVISION[providerKey] ?? 0;
+
 export interface EmbeddingStoreRegistry {
   storeFor(providerKey: string, vectorDim: number): EmbeddingStore;
   markReady(providerKey: string): void;
@@ -30,6 +47,7 @@ class EmbeddingStoreRegistryImpl implements EmbeddingStoreRegistry {
       binPath: `${this.baseDir}/${providerKey}/embeddings.bin`,
       indexPath: `${this.baseDir}/${providerKey}/embeddings.index.json`,
       vectorDim,
+      vectorRevision: vectorRevisionFor(providerKey),
     });
     this.stores.set(providerKey, store);
     return store;

@@ -27,9 +27,13 @@ import {
 import {
   createEmbeddingStoreRegistry,
   migrateV1FlatStore,
+  vectorRevisionFor,
   type EmbeddingStoreRegistry,
 } from "./storeRegistry";
-import { createEmbeddingGemmaProvider } from "./embeddingGemmaProvider";
+import {
+  createEmbeddingGemmaProvider,
+  EMBEDDING_GEMMA_BACKEND,
+} from "./embeddingGemmaProvider";
 import { createMultilingualE5Provider } from "./multilingualE5Provider";
 import { detectNonAsciiRatio } from "./langDetect";
 import type { VaultAdapter } from "./store";
@@ -213,6 +217,8 @@ export async function wireSemanticSearch(
   const gemmaDownloader = createModelDownloader({
     innerFactory: realPipelineFactory,
     dtype: { wasm: "q8", webgpu: "q4" },
+    // Gemma's vectors are wrong on WebGPU (ADR-0034).
+    backend: EMBEDDING_GEMMA_BACKEND,
   });
   const gemmaProvider = createEmbeddingGemmaProvider(gemmaDownloader.factory);
   const e5Downloader = createModelDownloader({
@@ -239,7 +245,13 @@ export async function wireSemanticSearch(
 
   if (semanticResult.success) {
     const state = semanticResult.state;
-    state.downloader = nativeDownloader;
+    // All three, not only MiniLM's: the Gemma and e5 downloads are the
+    // large ones, and showed no progress at all.
+    state.downloaders = [
+      { label: "MiniLM", downloader: nativeDownloader },
+      { label: "EmbeddingGemma 300M", downloader: gemmaDownloader },
+      { label: "Multilingual E5 base", downloader: e5Downloader },
+    ];
     state.store = nativeStore;
     state.registry = registry;
     // DLC readiness came from the probe pass above (no store init);
@@ -634,7 +646,8 @@ export async function purgeExcludedFromStores(
 /**
  * Probe each provider's store via its cheap metadata sidecar (never the
  * bin), mark current non-empty stores ready, and silently wipe stores
- * whose on-disk format predates FORMAT_VERSION. Embedding data is fully
+ * whose on-disk format predates FORMAT_VERSION or whose vectors predate
+ * the provider's vector revision. Embedding data is fully
  * re-derivable from the vault, so an upgrade wipe loses nothing and
  * needs no user confirmation. Extracted from wireSemanticSearch so this
  * (the riskiest startup path) is unit-testable with an in-memory adapter.
@@ -652,9 +665,18 @@ export async function probeAndWipeStaleStores(
   for (const key of ALL_PROVIDER_KEYS) {
     const probed = await registry.storeFor(key, PROVIDER_DIMS[key]).probe();
     if (!probed) continue;
-    if (probed.version < FORMAT_VERSION) {
+    // Older layout, or vectors an earlier build of this provider made.
+    if (
+      probed.version < FORMAT_VERSION ||
+      (probed.version === FORMAT_VERSION &&
+        probed.revision < vectorRevisionFor(key))
+    ) {
       staleKeys.push(key);
-    } else if (probed.version === FORMAT_VERSION && probed.recordCount > 0) {
+    } else if (
+      probed.version === FORMAT_VERSION &&
+      probed.revision === vectorRevisionFor(key) &&
+      probed.recordCount > 0
+    ) {
       registry.markReady(key);
       probedCounts[key] = probed.recordCount;
     }
