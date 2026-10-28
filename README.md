@@ -1,7 +1,7 @@
 # MCP Connector for Obsidian
 
-> [!WARNING]
-> **Known issue: on Obsidian 1.14 (Electron 43) the window can go blank while this plugin loads.** It affects macOS and Windows and is a crash of Obsidian's renderer, not an error thrown by this plugin. **Update to 3.1.1 or later.** The crash reports hold two signatures. The first, V8 stopping inside a read of Node's `AsyncLocalStorage`, is gone since 3.1.0, which no longer uses it inside Obsidian: on one Mac with Obsidian 1.14.5 (Electron 43.8.3), toggling the plugin off and on, 3.0.3 crashed on the first reload and 3.1.0-alpha.2 (the same fix as 3.1.0) crashed once in 200. The second is V8 running out of JavaScript heap: every reload of the plugin kept the previous instance in memory, about 40 MB each, through a global that the plugin's schema library registers and never removes. 3.1.1 removes it when the plugin unloads: on one Mac with Obsidian 1.15.0 (Electron 43.8.3), 420 reloads, with and without MCP clients connected, and no crash. The Electron 43.8.3 that ships with the Obsidian 1.14.5 installer changes neither on its own. I saw no crash on Electron 39.8.3 (Obsidian installer 1.12.7). If the window goes blank, restart Obsidian: the plugin usually loads on the next try. Reported to Obsidian [on their forum](https://forum.obsidian.md/t/renderer-sigsegv-on-macos-and-windows-with-electron-43-obsidian-1-14-4-when-a-large-community-plugin-loads-none-on-electron-39-8-3/119487), tracked here in [#597](https://github.com/istefox/obsidian-mcp-connector/issues/597) and [#609](https://github.com/istefox/obsidian-mcp-connector/issues/609).
+> [!NOTE]
+> **Blank window on Obsidian 1.14 (Electron 43): fixed in 3.1.1.** If Obsidian's window went white while this plugin loaded, update to 3.1.1 or later. Both causes were in the plugin. Read with Electron's own symbol files, the crash reports hold two signatures. The first is V8 stopping inside a read of Node's `AsyncLocalStorage`: Node 24 (Electron 40 and later) keeps its frames in a V8 slot that Chromium also writes to, and 3.1.0 no longer uses it inside Obsidian. The second is V8 running out of JavaScript heap: every reload of the plugin kept the previous instance in memory, about 40 MB each, through a `$ark` global that the plugin's schema library registers and never removes, and 3.1.1 removes it at unload. On one Mac, toggling the plugin off and on: 3.0.3 crashed on the first reload and 3.1.0-alpha.2 once in 200 (Obsidian 1.14.5, Electron 43.8.3), 3.1.1 never in 420 (Obsidian 1.15.0, Electron 43.8.3). The reporter of [#597](https://github.com/istefox/obsidian-mcp-connector/issues/597) confirmed it on Obsidian 1.14.4 with 3.1.1 and closed the issue. [#609](https://github.com/istefox/obsidian-mcp-connector/issues/609) stays open until its reporter confirms. Details in [ADR-0032](docs/architecture/ADR-0032-release-the-instance-at-unload.md) and on [the Obsidian forum](https://forum.obsidian.md/t/renderer-sigsegv-on-macos-and-windows-with-electron-43-obsidian-1-14-4-when-a-large-community-plugin-loads-none-on-electron-39-8-3/119487).
 
 [![GitHub release (latest by date)](https://img.shields.io/github/v/release/istefox/obsidian-mcp-connector?display_name=tag)](https://github.com/istefox/obsidian-mcp-connector/releases/latest)
 [![Build status](https://img.shields.io/github/actions/workflow/status/istefox/obsidian-mcp-connector/release.yml)](https://github.com/istefox/obsidian-mcp-connector/actions)
@@ -12,7 +12,7 @@
 
 Your Obsidian vault, exposed to AI clients over the [Model Context Protocol](https://modelcontextprotocol.io). The MCP server runs **inside Obsidian**, on loopback, with no binary to download and no cloud round-trip. Claude Desktop, Claude Code, Cursor, Cline, Continue, Windsurf and VS Code all connect to the same endpoint.
 
-[What's new in 3.0.0](#whats-new-in-300) · [Quick start](#quick-start) · [Tools](#what-it-can-do) · [Rendered search results](#rendered-search-results-mcp-apps) · [Adaptive tool loading](#adaptive-tool-loading) · [Per-client tokens](#per-client-tokens) · [Prompts](#prompts) · [Protocol](#protocol-status) · [Clients](#connecting-a-client) · [Troubleshooting](#troubleshooting) · [Security](#security) · [For developers](#for-developers)
+[What's new](#whats-new-in-322) · [Quick start](#quick-start) · [Tools](#what-it-can-do) · [Rendered search results](#rendered-search-results-mcp-apps) · [Adaptive tool loading](#adaptive-tool-loading) · [Per-client tokens](#per-client-tokens) · [Prompts](#prompts) · [Protocol](#protocol-status) · [Clients](#connecting-a-client) · [Troubleshooting](#troubleshooting) · [Security](#security) · [For developers](#for-developers)
 
 ---
 
@@ -69,11 +69,11 @@ Four things follow from that shape:
 
 The full list is in the [CHANGELOG](CHANGELOG.md).
 
-## What's new in 3.1.0
+## What's new in 3.1.0 and 3.1.1
 
 | Change | Why it matters |
 |---|---|
-| **Fewer blank windows on Obsidian 1.14** | The plugin no longer uses `AsyncLocalStorage` inside Obsidian, and 3.1.1 stops a reload from keeping the previous instance in memory. On one Mac: a crash on the first reload with 3.0.3, one in 200 with 3.1.0, none in 420 with 3.1.1. See the known issue at the top. |
+| **No more blank windows on Obsidian 1.14** | The plugin no longer uses `AsyncLocalStorage` inside Obsidian, and 3.1.1 stops a reload from keeping the previous instance in memory. On one Mac: a crash on the first reload with 3.0.3, one in 200 with 3.1.0-alpha.2, none in 420 with 3.1.1. See the note at the top. |
 | **Headless mode** | `obsidian-mcp-headless` serves the vault tools from a folder without Obsidian running. See [Headless mode](#headless-mode). |
 | **Lighter plugin load** | The semantic search engine loads the first time a search needs it, not at startup. |
 | **Smaller tool results** | Each result carries its data once instead of twice. |
@@ -716,7 +716,7 @@ Enable it with `systemctl --user enable --now obsidian-mcp-headless`. On a machi
 
 | Symptom | Cause and fix |
 |---|---|
-| Obsidian window goes blank (white) while the plugin loads, on Obsidian 1.14 | A renderer crash inside Electron 43, see the known issue at the top. Update to 3.1.1 or later, then restart Obsidian. On 3.1.0 and earlier each reload of the plugin keeps about 40 MB, so restart Obsidian rather than toggle the plugin many times in one session. If it keeps happening, add your crash report to [#597](https://github.com/istefox/obsidian-mcp-connector/issues/597) |
+| Obsidian window goes blank (white) while the plugin loads, on Obsidian 1.14 | A renderer crash caused by 3.0.x and 3.1.0 on Electron 43, see the note at the top. Update to 3.1.1 or later, then restart Obsidian. If it still happens on 3.1.1 or later, open an issue with the OS crash report: on macOS the `Obsidian Helper (Renderer)` file in `~/Library/Logs/DiagnosticReports` |
 | `401` on every call | The token matches no row, usually after a secret was replaced or a token revoked. Copy the current string from that row, or add a new token if the row is gone. |
 | `ECONNREFUSED 127.0.0.1:<port>` | Nothing listens there. On port 27200, open a vault with the plugin enabled, since the shared broker runs inside Obsidian. Any other port comes from a fixed port or an older direct config: compare it with **Server port** in Access control, or copy the config again from the token's row. Claude Desktop reads its config only at launch, so quit fully (Cmd+Q) and reopen after a change |
 | Notice: "Port 27200 is used by another program or by a vault server…" | A vault running an older MCP Connector version, a vault whose fixed port is 27200, or an unrelated program holds the broker port. Update or close that vault, change its fixed port, or stop the program. Direct vault ports keep working meanwhile, and the plugin keeps retrying |
