@@ -516,6 +516,12 @@ describe("language sampling timing", () => {
  */
 describe("wireSemanticSearch — indexer start and vault events", () => {
   const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
+  // Waits on the wall clock, not a fixed number of turns: a DLC build
+  // takes a varying number of event-loop turns on a slower CI runner.
+  const until = async (done: () => boolean, ms = 2000) => {
+    const end = Date.now() + ms;
+    while (!done() && Date.now() < end) await turn();
+  };
 
   /** A plugin whose vault adapter is in memory, and the layout callbacks it is holding back. */
   function host(initial: Record<string, unknown> = {}) {
@@ -1088,9 +1094,7 @@ describe("wireSemanticSearch — indexer start and vault events", () => {
       const dlc = state.dlcIndexers!.get(DLC_KEY);
       expect(dlc).toBeDefined();
 
-      for (let i = 0; i < 50 && state.isRebuildingFor?.(DLC_KEY); i++) {
-        await turn();
-      }
+      await until(() => !state.isRebuildingFor?.(DLC_KEY));
       expect(state.isRebuildingFor?.(DLC_KEY)).toBe(false);
       expect(state.registry!.isReady(DLC_KEY)).toBe(true);
       expect(state.pendingProvider).toBeNull();
@@ -1120,9 +1124,7 @@ describe("wireSemanticSearch — indexer start and vault events", () => {
         ...state.settings,
         provider: "embedding-gemma",
       });
-      for (let i = 0; i < 20 && state.isRebuildingFor?.(DLC_KEY); i++) {
-        await turn();
-      }
+      await until(() => !state.isRebuildingFor?.(DLC_KEY));
       expect(state.isRebuildingFor?.(DLC_KEY)).toBe(false);
       expect(state.dlcRebuildErrors?.get(DLC_KEY)).toBe("download failed");
       expect(state.pendingProvider).toBe(DLC_KEY);
@@ -1133,9 +1135,7 @@ describe("wireSemanticSearch — indexer start and vault events", () => {
       state.startRebuildFor?.(DLC_KEY);
       expect(state.isRebuildingFor?.(DLC_KEY)).toBe(true);
       expect(state.dlcRebuildErrors?.has(DLC_KEY)).toBe(false);
-      for (let i = 0; i < 50 && state.isRebuildingFor?.(DLC_KEY); i++) {
-        await turn();
-      }
+      await until(() => !state.isRebuildingFor?.(DLC_KEY));
       expect(state.registry!.isReady(DLC_KEY)).toBe(true);
       expect(state.pendingProvider).toBeNull();
     } finally {
