@@ -6,10 +6,10 @@ import {
   validateVisibleFolder,
 } from "../services/folderValidation";
 import { normalizeLimit } from "../services/pagination";
-import { parentPath, pathName, trimSlashes } from "../services/pathUtils";
+import { parentPath, trimSlashes } from "../services/pathUtils";
 import { successText } from "../services/responseBuilders";
 
-const DEFAULT_LIMIT = 1000;
+const DEFAULT_LIMIT = 200;
 const MAX_LIMIT = 1000;
 const MAX_FILE_NAMES = 2000;
 
@@ -26,7 +26,7 @@ export const getVaultTreeSchema = type({
       "When `true`, each folder node gets a `files` array of its direct child file names. At most 2000 names are returned across the tree; `filesTruncated` marks the cap.",
     ),
     "limit?": type("number>0").describe(
-      "Maximum folder nodes returned, including the root (default 1000, clamped to 1000).",
+      "Maximum folder nodes returned, including the root (default 200, clamped to 1000).",
     ),
   },
 }).describe(
@@ -43,9 +43,10 @@ export type GetVaultTreeContext = {
   app: App;
 };
 
+// No `name`: it is the last segment of `path`, and the full path is what
+// the next tool call needs, so a nested name would only add tokens.
 type TreeNode = {
   path: string;
-  name: string;
   empty: boolean;
   children: TreeNode[];
   files?: string[];
@@ -69,8 +70,6 @@ type FileNameBudget = {
 
 type BuildContext = {
   index: FolderIndex;
-  root: string;
-  rootName: string;
   childrenByParent: Map<string, string[]>;
   depth?: number;
   includeFiles: boolean;
@@ -120,14 +119,9 @@ function isEmptyFolder(index: FolderIndex, path: string): boolean {
   return index.empty.has(path);
 }
 
-function nodeName(path: string, ctx: BuildContext): string {
-  return path === ctx.root ? ctx.rootName : pathName(path);
-}
-
 function createNode(path: string, ctx: BuildContext): TreeNode {
   const node: TreeNode = {
     path,
-    name: nodeName(path, ctx),
     empty: isEmptyFolder(ctx.index, path),
     children: [],
   };
@@ -169,7 +163,6 @@ function buildNode(path: string, level: number, ctx: BuildContext): TreeNode {
 function buildTree(
   index: FolderIndex,
   root: string,
-  vaultName: string,
   options: TreeOptions,
 ): BuiltTree {
   const descendants = descendantsOf(index.folders, root);
@@ -180,8 +173,6 @@ function buildTree(
   };
   const rootNode = buildNode(root, 0, {
     index,
-    root,
-    rootName: root === "" ? vaultName : pathName(root),
     childrenByParent: groupChildrenByParent(descendants),
     depth: options.depth,
     includeFiles: options.includeFiles,
@@ -211,7 +202,7 @@ export async function getVaultTreeHandler(ctx: GetVaultTreeContext): Promise<{
   const visibilityError = validateVisibleFolder(index, root);
   if (visibilityError) return visibilityError;
 
-  const tree = buildTree(index, root, ctx.app.vault.getName(), {
+  const tree = buildTree(index, root, {
     depth: normalizeDepth(ctx.arguments.depth),
     includeFiles: ctx.arguments.includeFiles ?? false,
     limit: normalizeLimit(ctx.arguments.limit, DEFAULT_LIMIT, MAX_LIMIT),

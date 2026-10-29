@@ -43,7 +43,6 @@ describe("get_vault_tree tool", () => {
     expect(parse(result)).toEqual({
       root: {
         path: "",
-        name: "Test Vault",
         empty: true,
         children: [],
       },
@@ -65,22 +64,18 @@ describe("get_vault_tree tool", () => {
     expect(parse(result)).toEqual({
       root: {
         path: "",
-        name: "Test Vault",
         empty: false,
         children: [
           {
             path: "Projects",
-            name: "Projects",
             empty: false,
             children: [
               {
                 path: "Projects/2026",
-                name: "2026",
                 empty: false,
                 children: [
                   {
                     path: "Projects/2026/Q2",
-                    name: "Q2",
                     empty: true,
                     children: [],
                   },
@@ -88,7 +83,6 @@ describe("get_vault_tree tool", () => {
               },
               {
                 path: "Projects/Empty",
-                name: "Empty",
                 empty: true,
                 children: [],
               },
@@ -155,7 +149,6 @@ describe("get_vault_tree tool", () => {
 
     expect(data.root).toMatchObject({
       path: "Projects",
-      name: "Projects",
     });
     expect(data.root.children.map((c: { path: string }) => c.path)).toEqual([
       "Projects/2026",
@@ -203,6 +196,37 @@ describe("get_vault_tree tool", () => {
     expect(parse(exact).truncated).toBeUndefined();
   });
 
+  test("defaults to 200 folder nodes including the root", async () => {
+    for (let i = 0; i < 250; i++) addFolder(`F-${i}`);
+
+    const result = await getVaultTreeHandler({
+      arguments: {},
+      app: mockApp(),
+    });
+    const data = parse(result);
+
+    expect(data.root.children).toHaveLength(199);
+    expect(data.truncated).toBe(true);
+    expect(data.totalFolders).toBe(251);
+  });
+
+  test("nodes carry the full path and no separate name", async () => {
+    addFolder("Projects/2026");
+
+    const result = await getVaultTreeHandler({
+      arguments: {},
+      app: mockApp(),
+    });
+    const data = parse(result);
+
+    expect(Object.keys(data.root.children[0].children[0]).sort()).toEqual([
+      "children",
+      "empty",
+      "path",
+    ]);
+    expect(data.root.children[0].children[0].path).toBe("Projects/2026");
+  });
+
   test("an excluded file is hidden and does not fill its folder", async () => {
     addFolder("Notes");
     addFile("Notes/a.md");
@@ -234,7 +258,6 @@ describe("get_vault_tree tool", () => {
     expect(parse(result)).toEqual({
       root: {
         path: "",
-        name: "Test Vault",
         empty: true,
         children: [],
       },
